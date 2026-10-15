@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import io
 import json
-import ssl
 import subprocess
 import sys
 import tarfile
-import urllib.error
-import urllib.request
-from email.message import Message
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from bootstrap import API, InstallError, install, locations, main
+from bootstrap import API, CURL, InstallError, install, locations, main
 
 from .conftest import Shell, copy_runtime, init_git
 
@@ -22,29 +19,37 @@ SHA = "a" * 40
 
 @pytest.mark.parametrize("stage", ["commit", "archive"])
 @pytest.mark.parametrize(
-    ("error", "detail"),
+    ("status", "http_status", "message", "detail"),
     [
         pytest.param(
-            urllib.error.HTTPError(API, 403, "Forbidden", Message(), None),
+            22,
+            "403",
+            "curl: (22) The requested URL returned error: 403",
             "HTTP 403",
             id="forbidden",
         ),
         pytest.param(
-            urllib.error.HTTPError(API, 404, "Not Found", Message(), None),
+            22,
+            "404",
+            "curl: (22) The requested URL returned error: 404",
             "HTTP 404",
             id="not-found",
         ),
         pytest.param(
-            urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED")),
-            "CERTIFICATE_VERIFY_FAILED",
+            60,
+            "000",
+            "curl: (60) SSL certificate problem: self-signed certificate in certificate chain",
+            "self-signed certificate in certificate chain",
             id="certificate",
         ),
         pytest.param(
-            urllib.error.URLError("Name or service not known"),
+            6,
+            "000",
+            "curl: (6) Name or service not known",
             "Name or service not known",
             id="dns",
         ),
-        pytest.param(TimeoutError("timed out"), "timed out", id="timeout"),
+        pytest.param(28, "000", "curl: (28) Operation timed out", "timed out", id="timeout"),
     ],
 )
 def test_download_failure_names_the_request_and_cause_without_installation(
@@ -52,19 +57,34 @@ def test_download_failure_names_the_request_and_cause_without_installation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     stage: str,
-    error: urllib.error.URLError | TimeoutError,
+    status: int,
+    http_status: str,
+    message: str,
     detail: str,
 ) -> None:
     requests: list[str] = []
 
-    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
-        assert timeout == 30
-        requests.append(request.full_url)
-        if stage == "archive" and request.full_url == API:
-            return io.BytesIO(json.dumps({"sha": SHA}).encode())
-        raise error
+    def respond(
+        arguments: list[str],
+        *,
+        env: Mapping[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert env == shell.env
+        assert capture_output and text and not check
+        assert arguments[0] == CURL
+        assert arguments[arguments.index("--max-time") + 1] == "30"
+        url = arguments[-1]
+        requests.append(url)
+        if stage == "archive" and url == API:
+            output = Path(arguments[arguments.index("--output") + 1])
+            _ = output.write_bytes(json.dumps({"sha": SHA}).encode())
+            return subprocess.CompletedProcess(arguments, 0, "200", "")
+        return subprocess.CompletedProcess(arguments, status, http_status, message)
 
-    monkeypatch.setattr("bootstrap.urllib.request.urlopen", respond)
+    monkeypatch.setattr("bootstrap.subprocess.run", respond)
     monkeypatch.setattr("bootstrap.os.environ", shell.env)
     assert main([]) == 69
     output = capsys.readouterr()
@@ -87,12 +107,22 @@ def test_invalid_commit_response_names_the_stage_without_response_content(
     capsys: pytest.CaptureFixture[str],
     content: bytes,
 ) -> None:
-    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
-        assert request.full_url == API
-        assert timeout == 30
-        return io.BytesIO(content)
+    def respond(
+        arguments: list[str],
+        *,
+        env: Mapping[str, str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert arguments[-1] == API
+        assert env == shell.env
+        assert capture_output and text and not check
+        output = Path(arguments[arguments.index("--output") + 1])
+        _ = output.write_bytes(content)
+        return subprocess.CompletedProcess(arguments, 0, "200", "")
 
-    monkeypatch.setattr("bootstrap.urllib.request.urlopen", respond)
+    monkeypatch.setattr("bootstrap.subprocess.run", respond)
     monkeypatch.setattr("bootstrap.os.environ", shell.env)
     assert main([]) == 69
     output = capsys.readouterr()

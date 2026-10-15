@@ -5,7 +5,7 @@ Mise discovers and runs tasks. Pi refines commands and analyzes evidence. GitHub
 
 ## Install
 
-Install mise, uv 0.12.9 or later, Pi, GitHub CLI, Git, and ShellCheck through your approved package provider.
+Install mise, uv 0.12.9 or later, curl, Pi, GitHub CLI, Git, and ShellCheck through your approved package provider.
 Authenticate Pi and `gh` through their existing commands.
 The Python project uses Python 3.12 and locked dependencies. Shell startup does not install dependencies.
 
@@ -23,6 +23,11 @@ Later command commits use your normal Git identity and hooks.
 The installer then uses the existing link installer and `mise trust`.
 
 The launcher uses uv-managed Python and the standard library.
+Source downloads use `/usr/bin/curl` on macOS and `curl` on other systems.
+Apple's curl uses Keychain trust. uv uses system certificates for Python and dependency downloads.
+Both clients reject certificates from untrusted issuers.
+The operating system must trust your organization's certificate issuer.
+See [uv TLS certificates](https://docs.astral.sh/uv/concepts/authentication/certificates/) for system certificate settings.
 The installed runtime uses the downloaded `uv.lock` and disables source builds.
 Existing source directories and conflicting links cause rejection.
 Reruns reuse an owned registry and preserve generated commands and commits.
@@ -184,6 +189,7 @@ uv run --locked python check.py
 
 The command runs Ruff, strict Pyright, pytest, Bash syntax, and ShellCheck.
 Tests use real mise, isolated homes, and bounded substitutes for Pi and GitHub CLI.
+Certificate tests use a local HTTPS server and disposable certificates from OpenSSL.
 They prove local control flow and data handling. They do not prove model judgment or GitHub availability.
 Live Pi and GitHub smoke runs need existing authentication and remain separate from automated tests.
 

@@ -9,7 +9,10 @@ The registry uses this checkout's Git index. Keep dotfiles and HOME Git indexes 
 Its seed commands ignore ambient Git repository and index selectors.
 `install.sh` is generated from `bootstrap.py`. Regenerate it with
 `uv run --locked python -c 'from pathlib import Path; from bootstrap import launcher; Path("install.sh").write_text(launcher(Path("bootstrap.py").read_text()))'`.
-The launcher uses uv-managed Python and only the standard library.
+The launcher uses uv-managed Python and the standard library.
+Source downloads use `/usr/bin/curl` on macOS and `curl` on other systems.
+uv uses system certificates for Python and dependency downloads.
+Keep TLS authentication enabled.
 Installed runtime dependencies stay under the downloaded project's `uv.lock`.
 
 From the repository root, run `uv run --locked python check.py`.
