@@ -15,7 +15,7 @@ def main() -> int:
         result = subprocess.run(["uv", "run", "--locked", *arguments], cwd=root, check=False)
         if result.returncode:
             return result.returncode
-    shell_source = ["bin/ai", "tasks/ci", "tasks/review"]
+    shell_source = ["bin/ayi", "tasks/ci", "tasks/review"]
     for arguments in (
         ["shellcheck", "-S", "warning", *shell_source],
         *(["bash", "-n", name] for name in shell_source),

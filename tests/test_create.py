@@ -94,7 +94,7 @@ def test_review_verify_commit_register(shell: Shell) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert result.stdout.index("Print a greeting") < result.stdout.index("Run this verification?")
     assert "Verification passed" in result.stdout
-    assert "Invocation: ai run greet" in result.stdout
+    assert "Invocation: ayi run greet" in result.stdout
     task = shell.root / "tasks/greet"
     assert task.is_file()
     execution = shell.run("run", "greet", "space name")

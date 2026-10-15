@@ -28,8 +28,8 @@ def links_for(home: Path, config: Path) -> tuple[Link, ...]:
         raise ValueError("XDG_CONFIG_HOME must be absolute")
     result: list[Link] = []
     for source, destination in (
-        (ROOT / "bin/ai", home / ".local/bin/ai"),
-        (ROOT, config / "ai"),
+        (ROOT / "bin/ayi", home / ".local/bin/ayi"),
+        (ROOT, config / "ayi"),
     ):
         if destination.is_symlink() and destination.resolve() == source:
             state = LinkState.OWNED
@@ -48,7 +48,7 @@ def links() -> tuple[Link, ...]:
 
 def main(arguments: list[str]) -> int:
     if arguments not in (["plan"], ["apply"], ["uninstall"]):
-        print("ai: usage: ai install <plan|apply|uninstall>", file=sys.stderr)
+        print("ayi: usage: ayi install <plan|apply|uninstall>", file=sys.stderr)
         return 64
     targets = links()
     for target in targets:
@@ -57,7 +57,7 @@ def main(arguments: list[str]) -> int:
     if arguments == ["plan"]:
         return 0
     if any(target.state == LinkState.CONFLICT for target in targets):
-        print("ai: installation conflict. Existing targets stay unchanged.", file=sys.stderr)
+        print("ayi: installation conflict. Existing targets stay unchanged.", file=sys.stderr)
         return 65
     if arguments == ["uninstall"]:
         for target in targets:
@@ -79,7 +79,7 @@ def main(arguments: list[str]) -> int:
         for path in created:
             path.unlink()
         raise
-    print("Installed. Invoke ai from a shell whose PATH includes ~/.local/bin.")
+    print("Installed. Invoke ayi from a shell whose PATH includes ~/.local/bin.")
     return 0
 
 
@@ -87,10 +87,10 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
     except ValueError as error:
-        print(f"ai: {error}", file=sys.stderr)
+        print(f"ayi: {error}", file=sys.stderr)
         raise SystemExit(65) from error
     except OSError as error:
-        print(f"ai: installation failed: {error.strerror}", file=sys.stderr)
+        print(f"ayi: installation failed: {error.strerror}", file=sys.stderr)
         raise SystemExit(74) from error
     except KeyboardInterrupt:
         raise SystemExit(130) from None

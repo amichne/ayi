@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 #MISE description="Review a PR locally"
 set -euo pipefail
-ai_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-exec uv run --locked --no-dev --project "$ai_root" python "$ai_root/workflows.py" review "$@"
+ayi_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/workflows.py" review "$@"

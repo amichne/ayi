@@ -26,15 +26,15 @@ def test_plan_apply_fresh_shell_uninstall(shell: Shell) -> None:
     before = startup.read_bytes()
     plan = shell.run("install", "plan")
     assert plan.returncode == 0, plan.stderr
-    assert ".local/bin/ai" in plan.stdout
-    assert not (home / ".local/bin/ai").exists()
+    assert ".local/bin/ayi" in plan.stdout
+    assert not (home / ".local/bin/ayi").exists()
     applied = shell.run("install", "apply")
     assert applied.returncode == 0, applied.stderr
     assert shell.run("install", "apply").returncode == 0
     env = dict(shell.env, PATH=f"{home / '.local/bin'}:{shell.env['PATH']}")
     for name in ("one", "two"):
         result = subprocess.run(
-            ["/bin/zsh", "-f", "-c", 'ai list && ai run "$1" "two words"', "zsh", name],
+            ["/bin/zsh", "-f", "-c", 'ayi list && ayi run "$1" "two words"', "zsh", name],
             cwd=shell.cwd,
             env=env,
             capture_output=True,
@@ -48,21 +48,21 @@ def test_plan_apply_fresh_shell_uninstall(shell: Shell) -> None:
     assert not (home / ".bashrc").exists()
     removed = shell.run("install", "uninstall")
     assert removed.returncode == 0, removed.stderr
-    assert not (home / ".local/bin/ai").is_symlink()
-    assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ai").is_symlink()
+    assert not (home / ".local/bin/ayi").is_symlink()
+    assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ayi").is_symlink()
     assert startup.read_bytes() == before
 
 
 def test_conflict_preserves_all_targets(shell: Shell) -> None:
     prepare(shell)
-    destination = Path(shell.env["XDG_CONFIG_HOME"]) / "ai"
+    destination = Path(shell.env["XDG_CONFIG_HOME"]) / "ayi"
     destination.mkdir(parents=True)
     _ = (destination / "keep").write_text("user data", encoding="utf-8")
     result = shell.run("install", "apply")
     assert result.returncode == 65
     assert "conflict" in result.stderr
     assert (destination / "keep").read_text() == "user data"
-    assert not (Path(shell.env["HOME"]) / ".local/bin/ai").exists()
+    assert not (Path(shell.env["HOME"]) / ".local/bin/ayi").exists()
 
 
 @pytest.mark.parametrize(("failure", "status"), [("OSError", 74), ("KeyboardInterrupt", 130)])
@@ -89,8 +89,8 @@ def test_partial_install_removes_created_links(shell: Shell, failure: str, statu
         check=False,
     )
     assert result.returncode == status, result.stderr
-    assert not (Path(shell.env["HOME"]) / ".local/bin/ai").is_symlink()
-    assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ai").is_symlink()
+    assert not (Path(shell.env["HOME"]) / ".local/bin/ayi").is_symlink()
+    assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ayi").is_symlink()
 
 
 def test_clean_clone_recovers_commands(shell: Shell) -> None:

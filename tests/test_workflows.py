@@ -103,7 +103,7 @@ def test_ci_states(
     assert result.returncode == status, result.stderr + result.stdout
     assert f"Status: {expected}" in result.stdout
     assert HEAD in result.stdout
-    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ai/reports/*/report.md"))
+    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/reports/*/report.md"))
     assert f"Status: {expected}" in report.read_text()
     if checks and checks[0].get("conclusion") == "FAILURE":
         assert "unresolved reference Widget" in report.read_text()
@@ -121,7 +121,7 @@ def test_review_report_and_no_repository_changes(shell: Shell) -> None:
     ).stdout
     result = shell.run("run", "review", "42")
     assert result.returncode == 0, result.stderr + result.stdout
-    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ai/reports/*/report.md"))
+    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/reports/*/report.md"))
     assert HEAD in report.read_text()
     assert "Uncertain concerns" in report.read_text()
     assert (report.parent / "diff.patch").is_file()
@@ -142,7 +142,7 @@ def test_empty_pi_output_is_unavailable(shell: Shell, mode: str) -> None:
     result = shell.run("run", mode, "42")
     assert result.returncode == 69, result.stderr + result.stdout
     assert "empty response" in result.stderr
-    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ai/reports/*/report.md"))
+    report = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/reports/*/report.md"))
     assert "Pi diagnosis unavailable" in report.read_text()
     assert HEAD in report.read_text()
     if mode == "ci":

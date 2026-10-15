@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ayi_source="${BASH_SOURCE[0]}"
+while [ -L "$ayi_source" ]; do
+    ayi_parent="$(cd "$(dirname "$ayi_source")" && pwd -P)"
+    ayi_source="$(readlink "$ayi_source")"
+    [[ "$ayi_source" = /* ]] || ayi_source="$ayi_parent/$ayi_source"
+done
+ayi_root="$(cd "$(dirname "$ayi_source")/.." && pwd -P)"
+export AYI_CALLER_DIR="$PWD"
+
+case "${1:-help}" in
+    help|-h|--help)
+        printf '%s\n' 'Usage: ayi list | inspect <name> | run <name> [args] | create "<description>" | install <plan|apply|uninstall>'
+        exit 0 ;;
+    list)
+        [ "$#" -eq 1 ] || { printf 'ayi: usage: ayi list\n' >&2; exit 64; }
+        exec mise -C "$ayi_root" tasks ls --local ;;
+    create|install)
+        ayi_action="$1"
+        shift
+        exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/$ayi_action.py" "$@" ;;
+    run|inspect)
+        ayi_action="$1"
+        shift
+        case "${1:-}" in
+            ''|*[!a-z0-9-]*|[-0-9]*) printf 'ayi: invalid command name: %s\n' "${1:-}" >&2; exit 64 ;;
+        esac
+        ayi_name="$1"
+        shift
+        [ -x "$ayi_root/tasks/$ayi_name" ] || { printf 'ayi: unknown command: %s\n' "$ayi_name" >&2; exit 64; }
+        if [ "$ayi_action" = run ]; then
+            exec mise -C "$ayi_root" run --raw --quiet --skip-tools "$ayi_name" -- "$@"
+        fi
+        [ "$#" -eq 0 ] || { printf 'ayi: usage: ayi inspect <name>\n' >&2; exit 64; }
+        mise -C "$ayi_root" tasks info "$ayi_name"
+        printf '\nInvocation: ayi run %s [args]\n\n' "$ayi_name"
+        cat "$ayi_root/tasks/$ayi_name" ;;
+    *) printf 'ayi: unknown action: %s\n' "$1" >&2; exit 64 ;;
+esac
