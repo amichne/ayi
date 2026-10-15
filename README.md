@@ -1,6 +1,6 @@
 # Ayi
 
-Ayi supplies the `ai` command to create reusable commands, review a PR locally, or diagnose CI failures.
+Ayi supplies the `ayi` command to create reusable commands, review a PR locally, or diagnose CI failures.
 Mise discovers and runs tasks. Pi refines commands and analyzes evidence. GitHub CLI supplies PR data.
 
 ## Install
@@ -19,43 +19,43 @@ cd ayi
 Examine the source and installation plan:
 
 ```sh
-./bin/ai --help
-./bin/ai inspect ci
-./bin/ai install plan
+./bin/ayi --help
+./bin/ayi inspect ci
+./bin/ayi install plan
 ```
 
 If mise rejects the registry before inspection, read `mise.toml` and the task files directly.
 After source review, install the links:
 
 ```sh
-./bin/ai install apply
+./bin/ayi install apply
 ```
 
 This command trusts the reviewed registry through `mise trust`.
-It creates `~/.local/bin/ai` and `${XDG_CONFIG_HOME:-$HOME/.config}/ai` as links to this checkout.
+It creates `~/.local/bin/ayi` and `${XDG_CONFIG_HOME:-$HOME/.config}/ayi` as links to this checkout.
 It preserves existing targets when their ownership differs.
 If a file operation fails or you interrupt installation, the installer removes links that it created.
 It does not edit `.zshrc`, `.bashrc`, or the global mise configuration.
 
 The shell's `PATH` must include `~/.local/bin`.
-If that path is absent, use `./bin/ai` directly or add `~/.local/bin` to `PATH`.
+If that path is absent, use `./bin/ayi` directly or add `~/.local/bin` to `PATH`.
 
 ## Discover and run
 
 ```sh
-ai list
-ai inspect ci
-ai run ci 1025
-ai run review 1025
-ai run ci https://github.com/OWNER/REPO/pull/1025
-ai run review 1025 --repo OWNER/REPO
+ayi list
+ayi inspect ci
+ayi run ci 1025
+ayi run review 1025
+ayi run ci https://github.com/OWNER/REPO/pull/1025
+ayi run review 1025 --repo OWNER/REPO
 ```
 
 Numeric PR identifiers use the caller's Git repository.
 Both tasks also accept `--repo HOST/OWNER/REPO` for GitHub Enterprise.
 Arguments reach the task unchanged. The dispatcher rejects unknown names and path traversal.
 
-`ai inspect` prints native mise information, the invocation, and the complete task source.
+`ayi inspect` prints native mise information, the invocation, and the complete task source.
 The workflow tasks delegate to `workflows.py`. Examine that file and `prompts/` for their shared implementation.
 
 Tasks also run as ordinary executables:
@@ -63,13 +63,13 @@ Tasks also run as ordinary executables:
 ```sh
 ./tasks/ci 1025
 ./tasks/review 1025 --repo OWNER/REPO
-mise -C ~/.config/ai tasks ls
+mise -C ~/.config/ayi tasks ls
 ```
 
 ## Create a command
 
 ```sh
-ai create "Summarize failing CI checks for a PR"
+ayi create "Summarize failing CI checks for a PR"
 ```
 
 Pi starts an interactive session with its existing authentication and model settings.
@@ -100,7 +100,7 @@ No push occurs. Normal Git hooks and local Git identity still govern the commit.
 
 Drafts remain under the ignored `drafts/` directory after rejection or cancellation.
 To refine an existing draft, use Pi in that directory.
-To register a revised draft, start `ai create` again and ask Pi to reuse its files.
+To register a revised draft, start `ayi create` again and ask Pi to reuse its files.
 
 Generated code runs with your operating-system permissions after approval.
 A disposable home separates normal configuration. It does not provide a filesystem or network sandbox.
@@ -109,7 +109,7 @@ Creation also disables these resources except its explicit file tools.
 
 ## Reports and status
 
-Reports and evidence stay in `${XDG_STATE_HOME:-$HOME/.local/state}/ai/reports/`.
+Reports and evidence stay in `${XDG_STATE_HOME:-$HOME/.local/state}/ayi/reports/`.
 Each invocation uses a separate directory with restricted permissions.
 Reports name the PR URL and head commit. Review also saves the diff.
 CI saves available failure logs and sends bounded excerpts to Pi.
@@ -144,13 +144,13 @@ The workflows do not run repository tests, publish comments, rerun jobs, or repa
 ## Recover and remove
 
 Keep the checkout and generated commits in Git to recover the same definitions on another machine.
-On a fresh clone, run `./bin/ai install apply`.
+On a fresh clone, run `./bin/ayi install apply`.
 Pi authentication and `gh` authentication remain machine-local prerequisites.
 
 To remove the installed links, use:
 
 ```sh
-./bin/ai install uninstall
+./bin/ayi install uninstall
 ```
 
 The command preserves source files, reports, drafts, and mise trust records.

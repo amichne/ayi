@@ -20,7 +20,7 @@ class Shell:
 
     def run(self, *args: str, input_text: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(self.root / "bin/ai"), *args],
+            [str(self.root / "bin/ayi"), *args],
             cwd=self.cwd,
             env=self.env,
             input=input_text,
@@ -35,7 +35,7 @@ def shell(tmp_path: Path) -> Shell:
     root = tmp_path / "checkout with spaces"
     (root / "bin").mkdir(parents=True)
     (root / "tasks").mkdir(parents=True)
-    for name in ("bin/ai", "mise.toml", "pyproject.toml", "uv.lock", ".python-version"):
+    for name in ("bin/ayi", "mise.toml", "pyproject.toml", "uv.lock", ".python-version"):
         source = SOURCE / name
         if source.exists():
             _ = shutil.copy2(source, root / name)

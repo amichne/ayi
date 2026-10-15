@@ -103,7 +103,7 @@ def approved(question: str) -> bool:
 
 
 def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
-    with tempfile.TemporaryDirectory(prefix="ai-verify-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="ayi-verify-") as temporary:
         directory = Path(temporary)
         task = directory / "task"
         verification = directory / "verify"
@@ -131,7 +131,7 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
                     return VerificationFailed(result.returncode)
         result = subprocess.run([str(verification), str(task)], cwd=directory, env=env, check=False)
         if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
-            print(f"ai: {Rejection.CHANGED}", file=sys.stderr)
+            print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
             return VerificationFailed(65)
         if result.returncode:
             return VerificationFailed(result.returncode)
@@ -150,7 +150,7 @@ def register(verified: _VerifiedDraft) -> int:
         ROOT / "requirements" / f"{draft.name}.md": draft.requirements,
     }
     if any(path.exists() or path.is_symlink() for path in files):
-        print(f"ai: {Rejection.EXISTS}", file=sys.stderr)
+        print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
     paths = [str(path.relative_to(REPO)) for path in files]
     tracked = subprocess.run(
@@ -161,7 +161,7 @@ def register(verified: _VerifiedDraft) -> int:
     if tracked.returncode:
         return tracked.returncode
     if tracked.stdout:
-        print(f"ai: {Rejection.EXISTS}", file=sys.stderr)
+        print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
     written: list[Path] = []
     committed = False
@@ -180,7 +180,7 @@ def register(verified: _VerifiedDraft) -> int:
                 "commit",
                 "--only",
                 "-m",
-                f"feat: add ai command {draft.name}",
+                f"feat: add ayi command {draft.name}",
                 "--",
                 *paths,
             ),
@@ -197,10 +197,10 @@ def register(verified: _VerifiedDraft) -> int:
 
 def main(arguments: list[str]) -> int:
     if len(arguments) != 1 or not arguments[0].strip():
-        print('ai: usage: ai create "<description>"', file=sys.stderr)
+        print('ayi: usage: ayi create "<description>"', file=sys.stderr)
         return 64
     if shutil.which("pi") is None:
-        print("ai: missing dependency: pi", file=sys.stderr)
+        print("ayi: missing dependency: pi", file=sys.stderr)
         return 69
     drafts = ROOT / "drafts"
     drafts.mkdir(exist_ok=True)
@@ -230,7 +230,7 @@ def main(arguments: list[str]) -> int:
         return result.returncode
     draft = read_draft(directory)
     if isinstance(draft, Rejected):
-        print(f"ai: {draft.reason}. Draft: {directory}", file=sys.stderr)
+        print(f"ayi: {draft.reason}. Draft: {directory}", file=sys.stderr)
         return 65
     for label, content in (
         ("Requirements", draft.requirements),
@@ -243,7 +243,7 @@ def main(arguments: list[str]) -> int:
     verified = verify(draft)
     if isinstance(verified, VerificationFailed):
         print(
-            f"ai: verification failed: exit {verified.status}. Draft: {directory}", file=sys.stderr
+            f"ayi: verification failed: exit {verified.status}. Draft: {directory}", file=sys.stderr
         )
         return verified.status
     print("Verification passed.")
@@ -251,7 +251,7 @@ def main(arguments: list[str]) -> int:
         return 1
     status = register(verified)
     if status == 0:
-        print(f"Invocation: ai run {draft.name} [args]")
+        print(f"Invocation: ayi run {draft.name} [args]")
     return status
 
 
@@ -259,7 +259,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
     except OSError as error:
-        print(f"ai: local operation failed: {error.strerror}", file=sys.stderr)
+        print(f"ayi: local operation failed: {error.strerror}", file=sys.stderr)
         raise SystemExit(74) from error
     except KeyboardInterrupt:
         raise SystemExit(130) from None

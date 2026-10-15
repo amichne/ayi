@@ -227,30 +227,30 @@ def main(arguments: list[str]) -> int:
         re.fullmatch(r"[1-9][0-9]*|https://[^/\s]+/[^/\s]+/[^/\s]+/pull/[1-9][0-9]*", selector)
         is None
     ):
-        print("ai: PR must be a positive number or an HTTPS PR URL", file=sys.stderr)
+        print("ayi: PR must be a positive number or an HTTPS PR URL", file=sys.stderr)
         return 64
     if (
         repo is not None
         and re.fullmatch(r"(?:[a-zA-Z0-9.-]+/)?[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repo) is None
     ):
-        print("ai: invalid repository", file=sys.stderr)
+        print("ayi: invalid repository", file=sys.stderr)
         return 64
     scope = ["--repo", repo] if repo is not None else []
     fields = "number,url,title,body,headRefOid,baseRefOid,statusCheckRollup"
     metadata = capture(["gh", "pr", "view", selector, *scope, "--json", fields])
     if isinstance(metadata, Failed):
-        print(f"ai: GitHub data unavailable: {metadata.detail}", file=sys.stderr)
+        print(f"ayi: GitHub data unavailable: {metadata.detail}", file=sys.stderr)
         return 69
     try:
         pr = PullRequest.model_validate_json(metadata.text)
     except ValidationError as error:
         print(
-            f"ai: GitHub data unavailable: invalid metadata ({error.error_count()} errors)",
+            f"ayi: GitHub data unavailable: invalid metadata ({error.error_count()} errors)",
             file=sys.stderr,
         )
         return 69
     reports = (
-        Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "ai/reports"
+        Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "ayi/reports"
     )
     reports.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = Path(
@@ -263,12 +263,12 @@ def main(arguments: list[str]) -> int:
     if mode == "review":
         diff = capture(["gh", "pr", "diff", selector, *scope, "--color", "never"])
         if isinstance(diff, Failed):
-            print(f"ai: diff unavailable. Evidence: {directory}", file=sys.stderr)
+            print(f"ayi: diff unavailable. Evidence: {directory}", file=sys.stderr)
             return 69
         diff_path = directory / "diff.patch"
         _ = diff_path.write_text(diff.text, encoding="utf-8")
         if len(diff.text.encode()) > 1_000_000:
-            print(f"ai: diff exceeds 1 MB. Evidence: {directory}", file=sys.stderr)
+            print(f"ayi: diff exceeds 1 MB. Evidence: {directory}", file=sys.stderr)
             return 65
         attachments.append(diff_path)
         status = 0
@@ -307,7 +307,7 @@ def main(arguments: list[str]) -> int:
         same_revision = False
     if not same_revision:
         print(
-            f"ai: PR head changed or became unavailable. Retry. Evidence: {directory}",
+            f"ayi: PR head changed or became unavailable. Retry. Evidence: {directory}",
             file=sys.stderr,
         )
         return 75
@@ -316,7 +316,7 @@ def main(arguments: list[str]) -> int:
         analysis = reason(mode, directory, attachments)
     if isinstance(analysis, Failed):
         evidence += "\nPi diagnosis unavailable. Native evidence remains in this report.\n"
-        print(f"ai: Pi failed: {analysis.detail}", file=sys.stderr)
+        print(f"ayi: Pi failed: {analysis.detail}", file=sys.stderr)
         status = 69
         analysis = Captured("")
     report = directory / "report.md"
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
     except OSError as error:
-        print(f"ai: local operation failed: {error.strerror}", file=sys.stderr)
+        print(f"ayi: local operation failed: {error.strerror}", file=sys.stderr)
         raise SystemExit(74) from error
     except KeyboardInterrupt:
         raise SystemExit(130) from None
