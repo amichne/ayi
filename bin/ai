@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ai_source="${BASH_SOURCE[0]}"
+while [ -L "$ai_source" ]; do
+    ai_parent="$(cd "$(dirname "$ai_source")" && pwd -P)"
+    ai_source="$(readlink "$ai_source")"
+    [[ "$ai_source" = /* ]] || ai_source="$ai_parent/$ai_source"
+done
+ai_root="$(cd "$(dirname "$ai_source")/.." && pwd -P)"
+export AI_CALLER_DIR="$PWD"
+
+case "${1:-help}" in
+    help|-h|--help)
+        printf '%s\n' 'Usage: ai list | inspect <name> | run <name> [args] | create "<description>" | install <plan|apply|uninstall>'
+        exit 0 ;;
+    list)
+        [ "$#" -eq 1 ] || { printf 'ai: usage: ai list\n' >&2; exit 64; }
+        exec mise -C "$ai_root" tasks ls --local ;;
+    create|install)
+        ai_action="$1"
+        shift
+        exec uv run --locked --no-dev --project "$ai_root" python "$ai_root/$ai_action.py" "$@" ;;
+    run|inspect)
+        ai_action="$1"
+        shift
+        case "${1:-}" in
+            ''|*[!a-z0-9-]*|[-0-9]*) printf 'ai: invalid command name: %s\n' "${1:-}" >&2; exit 64 ;;
+        esac
+        ai_name="$1"
+        shift
+        [ -x "$ai_root/tasks/$ai_name" ] || { printf 'ai: unknown command: %s\n' "$ai_name" >&2; exit 64; }
+        if [ "$ai_action" = run ]; then
+            exec mise -C "$ai_root" run --raw --quiet --skip-tools "$ai_name" -- "$@"
+        fi
+        [ "$#" -eq 0 ] || { printf 'ai: usage: ai inspect <name>\n' >&2; exit 64; }
+        mise -C "$ai_root" tasks info "$ai_name"
+        printf '\nInvocation: ai run %s [args]\n\n' "$ai_name"
+        cat "$ai_root/tasks/$ai_name" ;;
+    *) printf 'ai: unknown action: %s\n' "$1" >&2; exit 64 ;;
+esac
