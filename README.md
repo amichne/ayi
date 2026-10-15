@@ -9,7 +9,27 @@ Install mise, uv 0.12.9 or later, Pi, GitHub CLI, Git, and ShellCheck through yo
 Authenticate Pi and `gh` through their existing commands.
 The Python project uses Python 3.12 and locked dependencies. Shell startup does not install dependencies.
 
-Clone the repository into its own directory:
+Install Ayi without a repository clone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/amichne/ayi/main/install.sh | sh
+```
+
+The installer downloads a GitHub source archive for an exact commit.
+It stores the source in `${XDG_DATA_HOME:-$HOME/.local/share}/ayi/source`.
+It creates a local Git registry so that command creation can commit new tasks.
+The first commit uses the Ayi installer identity, with signing and hooks disabled for that commit.
+Later command commits use your normal Git identity and hooks.
+The installer then uses the existing link installer and `mise trust`.
+
+The launcher uses uv-managed Python and the standard library.
+The installed runtime uses the downloaded `uv.lock` and disables source builds.
+Existing source directories and conflicting links cause rejection.
+Reruns reuse an owned registry and preserve generated commands and commits.
+They restore missing links without a source upgrade.
+The installer keeps authentication and shell startup outside its scope.
+
+For a developer checkout, clone the repository into its own directory:
 
 ```sh
 git clone https://github.com/amichne/ayi.git
