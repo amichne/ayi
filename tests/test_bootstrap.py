@@ -2,18 +2,104 @@ from __future__ import annotations
 
 import io
 import json
+import ssl
 import subprocess
 import sys
 import tarfile
+import urllib.error
+import urllib.request
+from email.message import Message
 from pathlib import Path
 
 import pytest
 
-from bootstrap import API, InstallError, install, locations
+from bootstrap import API, InstallError, install, locations, main
 
 from .conftest import Shell, copy_runtime, init_git
 
 SHA = "a" * 40
+
+
+@pytest.mark.parametrize("stage", ["commit", "archive"])
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [
+        pytest.param(
+            urllib.error.HTTPError(API, 403, "Forbidden", Message(), None),
+            "HTTP 403",
+            id="forbidden",
+        ),
+        pytest.param(
+            urllib.error.HTTPError(API, 404, "Not Found", Message(), None),
+            "HTTP 404",
+            id="not-found",
+        ),
+        pytest.param(
+            urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED")),
+            "CERTIFICATE_VERIFY_FAILED",
+            id="certificate",
+        ),
+        pytest.param(
+            urllib.error.URLError("Name or service not known"),
+            "Name or service not known",
+            id="dns",
+        ),
+        pytest.param(TimeoutError("timed out"), "timed out", id="timeout"),
+    ],
+)
+def test_download_failure_names_the_request_and_cause_without_installation(
+    shell: Shell,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stage: str,
+    error: urllib.error.URLError | TimeoutError,
+    detail: str,
+) -> None:
+    requests: list[str] = []
+
+    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
+        assert timeout == 30
+        requests.append(request.full_url)
+        if stage == "archive" and request.full_url == API:
+            return io.BytesIO(json.dumps({"sha": SHA}).encode())
+        raise error
+
+    monkeypatch.setattr("bootstrap.urllib.request.urlopen", respond)
+    monkeypatch.setattr("bootstrap.os.environ", shell.env)
+    assert main([]) == 69
+    output = capsys.readouterr()
+    failed_url = (
+        API if stage == "commit" else f"https://github.com/amichne/ayi/archive/{SHA}.tar.gz"
+    )
+    assert requests == ([API] if stage == "commit" else [API, failed_url])
+    assert "source download failed" in output.err
+    assert failed_url in output.err
+    assert detail in output.err
+    assert not locations(shell.env).parent.exists()
+    assert not (Path(shell.env["HOME"]) / ".local/bin/ayi").exists()
+    assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ayi").exists()
+
+
+@pytest.mark.parametrize("content", [b"not JSON: private response", b"\xffprivate response"])
+def test_invalid_commit_response_names_the_stage_without_response_content(
+    shell: Shell,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: bytes,
+) -> None:
+    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
+        assert request.full_url == API
+        assert timeout == 30
+        return io.BytesIO(content)
+
+    monkeypatch.setattr("bootstrap.urllib.request.urlopen", respond)
+    monkeypatch.setattr("bootstrap.os.environ", shell.env)
+    assert main([]) == 69
+    output = capsys.readouterr()
+    assert "source commit response is invalid" in output.err
+    assert API in output.err
+    assert "private response" not in output.err
+    assert not locations(shell.env).parent.exists()
 
 
 def source_archive(shell: Shell, bad: str = "") -> bytes:

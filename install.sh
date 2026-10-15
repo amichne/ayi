@@ -58,6 +58,12 @@ class _Locations:
     parent: Path
 
 
+@dataclass(frozen=True)
+class DownloadFailed:
+    url: str
+    reason: str
+
+
 def mapping(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict)
 
@@ -80,13 +86,28 @@ def locations(env: Mapping[str, str]) -> _Locations:
     return _Locations(parent / "source", parent)
 
 
-def download(url: str) -> bytes:
+def download(url: str) -> bytes | DownloadFailed:
     request = urllib.request.Request(url, headers={"User-Agent": "ayi-installer"})  # noqa: S310 -- caller constructs fixed GitHub HTTPS URLs
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 -- fixed GitHub HTTPS URLs
-        content = response.read(MAX_SOURCE + 1)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 -- fixed GitHub HTTPS URLs
+            content = response.read(MAX_SOURCE + 1)
+    except urllib.error.HTTPError as error:
+        return DownloadFailed(url, f"HTTP {error.code}")
+    except urllib.error.URLError as error:
+        return DownloadFailed(url, str(error.reason))
+    except TimeoutError:
+        return DownloadFailed(url, "request timed out")
     if len(content) > MAX_SOURCE:
         raise InstallError(65, "source response exceeds 32 MiB")
     return content
+
+
+def source(url: str, fetch: Callable[[str], bytes | DownloadFailed]) -> bytes:
+    result = fetch(url)
+    if isinstance(result, DownloadFailed):
+        reason = "".join(char if char.isprintable() else " " for char in result.reason)[:300]
+        raise InstallError(69, f"source download failed: {result.url}: {reason}")
+    return result
 
 
 def unpack(content: bytes, selected: _Revision, root: Path) -> None:
@@ -149,7 +170,7 @@ def apply(target: _Locations, env: Mapping[str, str]) -> None:
 def install(
     target: _Locations,
     env: Mapping[str, str],
-    fetch: Callable[[str], bytes] = download,
+    fetch: Callable[[str], bytes | DownloadFailed] = download,
 ) -> None:
     for tool in ("uv", "git", "mise"):
         if shutil.which(tool, path=env.get("PATH", "")) is None:
@@ -166,8 +187,12 @@ def install(
             raise InstallError(65, f"existing source stays unchanged: {target.root}")
         apply(target, env)
         return
-    selected = revision(json.loads(fetch(API)))
-    content = fetch(f"https://github.com/amichne/ayi/archive/{selected.sha}.tar.gz")
+    metadata = source(API, fetch)
+    try:
+        selected = revision(json.loads(metadata))
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise InstallError(69, f"source commit response is invalid: {API}") from error
+    content = source(f"https://github.com/amichne/ayi/archive/{selected.sha}.tar.gz", fetch)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.root.mkdir()
     with ExitStack() as rollback:
@@ -224,9 +249,6 @@ def main(arguments: list[str]) -> int:
     except InstallError as error:
         print(f"ayi: {error.message}", file=sys.stderr)
         return error.status
-    except (urllib.error.URLError, json.JSONDecodeError, UnicodeError):
-        print("ayi: source download failed", file=sys.stderr)
-        return 69
     except tarfile.TarError:
         print("ayi: source archive is invalid", file=sys.stderr)
         return 65
