@@ -46,6 +46,7 @@ ignore = ["E501", "S603", "S607"]
 "**/conftest.py" = ["S101"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 addopts = "--strict-config --strict-markers --import-mode=importlib -ra"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
