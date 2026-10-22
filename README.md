@@ -1,11 +1,21 @@
 # Ayi
 
-Ayi supplies the `ayi` command to create reusable commands, review a PR locally, or diagnose CI failures.
-Mise discovers and runs tasks. Pi refines commands and analyzes evidence. GitHub CLI supplies PR data.
+Ayi is a shell tooling factory. Describe a tool, answer task-specific menus, review it, and keep it in Git.
+Pi creates the questions and choices at runtime. Mise discovers and runs the resulting commands.
+Bundled commands also review PRs locally and diagnose CI failures using GitHub CLI.
+
+```sh
+ayi new "Find large files and show their sizes"
+ayi modify large-files "Add a minimum size flag"
+ayi explain large-files
+ayi run large-files --min-size 100M
+ayi                          # enter a new request interactively
+```
 
 ## Install
 
 Install mise, uv 0.12.9 or later, curl, Pi, GitHub CLI, Git, and ShellCheck through your approved package provider.
+Install fzf 0.60 or later for interactive fuzzy menus; without it, Ayi uses numbered text choices.
 Authenticate Pi and `gh` through their existing commands.
 The Python project uses Python 3.12 and locked dependencies. Shell startup does not install dependencies.
 
@@ -91,17 +101,31 @@ Tasks also run as ordinary executables:
 mise -C ~/.config/ayi tasks ls
 ```
 
-## Create a command
+## Create, modify, and explain commands
 
 ```sh
-ayi create "Summarize failing CI checks for a PR"
+ayi new "Summarize failing CI checks for a PR"
+ayi modify my-command "Accept stdin as well as file arguments"
+ayi explain my-command
 ```
 
-Pi starts an interactive session with its existing authentication and model settings.
-The creation prompt asks Pi to resolve missing requirements before implementation.
-Pi can read and write draft files. It cannot execute commands through the enabled tools.
+`new` first asks for the command name and preferred invocation, then resolves consequential
+requirements as needed. Each question and its choices come from Pi, using the request and
+all previous answers, rather than a fixed questionnaire. `modify` supplies the existing
+source and requirements and asks only about unresolved changes; the name stays fixed.
 
-When Pi finishes the draft, exit Pi with `/quit`.
+Type to filter the fzf choices, use arrow keys and Enter to select, or choose
+**Write a different answer** for free text. Esc or Ctrl-C cancels without registration.
+Menus wrap at narrow widths and honor `NO_COLOR`. If fzf is absent or input/output is
+redirected, numbered choices accept a number or a custom answer. EOF or an empty answer cancels.
+Run `ayi`, `ayi new`, or `ayi modify <name>` without a prompt to enter text with ordinary
+readline cursor editing. No multiline editor or persistent prompt history is provided.
+
+Pi uses its existing authentication and model settings. Interview and explanation calls
+have tools disabled. After the interview, Pi writes a draft and exits automatically;
+there is no Pi session to quit. Draft generation enables only read/write/edit file tools,
+not command execution. These tools are not a filesystem sandbox.
+
 The caller prints the requirements, task source, and verification source.
 Examine all three before you approve verification.
 The verification receives a disposable `HOME` and XDG directories without inherited credentials.
@@ -109,7 +133,7 @@ Bash tasks also pass Bash syntax and ShellCheck checks.
 Changed verification inputs cause rejection.
 
 After verification passes, the caller requests approval to commit and register the command.
-The local commit uses the Ayi checkout and contains only these new files:
+The local commit uses the Ayi checkout and contains only the command's files:
 
 ```text
 tasks/<name>
@@ -117,15 +141,24 @@ verification/<name>
 requirements/<name>.md
 ```
 
-Unrelated staged files stay staged. Existing commands cannot be overwritten.
-Deleted paths in the Git index or current commit also prevent registration.
-A failed commit removes the new files from the registry.
+Unrelated staged files stay staged. `new` cannot overwrite existing commands;
+deleted paths in the Git index or current commit also prevent new registration.
+`modify` requires the command's files to be clean and tracked (missing requirements or
+verification files may be added). It rechecks the original bytes, permissions, and Git
+status before replacement. A changed command causes rejection. A failed commit restores
+the original files and removes newly added files.
 Mise discovers the task file in later sessions.
 No push occurs. Normal Git hooks and local Git identity still govern the commit.
 
+`explain` sends source and any saved requirements and verification to Pi, and prints
+usage, dependencies, effects, and limitations without running the command. It explains
+Ayi registry commands, not arbitrary executables from PATH. Explanation is model analysis,
+not a claim that the tool has been tested.
+
 Drafts remain under the ignored `drafts/` directory after rejection or cancellation.
 To refine an existing draft, use Pi in that directory.
-To register a revised draft, start `ayi create` again and ask Pi to reuse its files.
+The legacy `ayi create "<description>"` retains the interactive Pi workflow: exit with
+`/quit` to review and register. It can also be used to ask Pi to reuse a saved draft.
 
 Generated code runs with your operating-system permissions after approval.
 A disposable home separates normal configuration. It does not provide a filesystem or network sandbox.
@@ -157,8 +190,8 @@ An empty Pi response means unavailable. The report keeps the native evidence.
 | Invalid draft, installation conflict, or oversized diff | `65` |
 | Unavailable GitHub data, Pi diagnosis, or conclusive CI result | `69` |
 | Failed local file operation | `74` |
-| PR changed during collection | `75` |
-| Interrupted operation | `130` |
+| PR changed during collection or command changed during modification | `75` |
+| Interrupted operation or cancelled interview | `130` |
 
 Native task failures preserve their exit status. Argument-parser usage errors return `2`.
 A failed check takes precedence when other checks remain pending.

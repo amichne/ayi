@@ -10,10 +10,16 @@ done
 ayi_root="$(cd "$(dirname "$ayi_source")/.." && pwd -P)"
 export AYI_CALLER_DIR="$PWD"
 
-case "${1:-help}" in
+case "${1:-new}" in
     help|-h|--help)
-        printf '%s\n' 'Usage: ayi list | inspect <name> | run <name> [args] | create "<description>" | install <plan|apply|uninstall>'
+        printf '%s\n' \
+            'Usage: ayi new [prompt] | modify <name> [prompt] | explain <name>' \
+            '       ayi list | inspect <name> | run <name> [args]' \
+            '       ayi create "<description>" | install <plan|apply|uninstall>' \
+            '' 'Run ayi with no arguments to describe a new shell tool.'
         exit 0 ;;
+    new|modify|explain)
+        exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/factory.py" "$@" ;;
     list)
         [ "$#" -eq 1 ] || { printf 'ayi: usage: ayi list\n' >&2; exit 64; }
         exec mise -C "$ayi_root" tasks ls --local ;;

@@ -2,6 +2,10 @@ Create one ordinary executable mise task from the user's request.
 
 Ask the user about unresolved inputs, output, dependencies, effects, and acceptance criteria.
 Do not implement the task until the user resolves those questions.
+When the caller supplies a completed factory interview, use its resolved requirements
+and answers instead of starting another interview. Preserve the agreed name exactly.
+For modification, use the supplied existing source and preserve behavior outside the
+requested changes. Write the replacement draft only, never edit the registry itself.
 Reuse an existing task when it already meets the request.
 Use deterministic native CLI operations when they meet the request.
 Use Pi only for reasoning or interactive AI execution.

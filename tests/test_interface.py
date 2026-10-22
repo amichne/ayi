@@ -19,7 +19,8 @@ def test_public_ayi_command_is_offline_and_rejects_unknown_names(tmp_path: Path)
         check=False,
     )
     assert help_result.returncode == 0, help_result.stderr
-    assert help_result.stdout.startswith("Usage: ayi list |")
+    assert help_result.stdout.startswith("Usage: ayi new [prompt] |")
+    assert "modify <name> [prompt] | explain <name>" in help_result.stdout
     assert help_result.stderr == ""
     rejected = subprocess.run(
         [str(launcher), "run", "absent"],

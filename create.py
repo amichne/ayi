@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,45 @@ class _VerifiedDraft:
 @dataclass(frozen=True)
 class VerificationFailed:
     status: int
+
+
+@dataclass(frozen=True)
+class Original:
+    name: str
+    files: dict[Path, tuple[bytes, int] | None]
+
+
+def command_paths(name: str) -> tuple[Path, Path, Path]:
+    return (
+        ROOT / "tasks" / name,
+        ROOT / "verification" / name,
+        ROOT / "requirements" / f"{name}.md",
+    )
+
+
+def read_original(name: str) -> Original | Rejected:
+    paths = command_paths(name)
+    relative = [str(path.relative_to(REPO)) for path in paths]
+    status = subprocess.run(
+        git_arguments("status", "--porcelain", "--untracked-files=all", "--", *relative),
+        capture_output=True,
+        check=False,
+    )
+    tracked = subprocess.run(
+        git_arguments("ls-files", "--", *relative), capture_output=True, text=True, check=False
+    )
+    if status.returncode or tracked.returncode or status.stdout or not paths[0].is_file():
+        return Rejected(Rejection.CHANGED)
+    files: dict[Path, tuple[bytes, int] | None] = {}
+    for path, name_in_git in zip(paths, relative, strict=True):
+        if path.is_symlink() or (
+            path.exists() and (not path.is_file() or name_in_git not in tracked.stdout.splitlines())
+        ):
+            return Rejected(Rejection.CHANGED)
+        files[path] = (
+            (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) if path.exists() else None
+        )
+    return Original(name, files)
 
 
 def read_draft(directory: Path) -> Draft | Rejected:
@@ -142,14 +182,21 @@ def git_arguments(*arguments: str) -> list[str]:
     return ["git", "-C", str(REPO), *arguments]
 
 
-def register(verified: _VerifiedDraft) -> int:
+def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
     draft = verified.draft
-    files = {
-        ROOT / "tasks" / draft.name: draft.task,
-        ROOT / "verification" / draft.name: draft.verification,
-        ROOT / "requirements" / f"{draft.name}.md": draft.requirements,
-    }
-    if any(path.exists() or path.is_symlink() for path in files):
+    files = dict(
+        zip(
+            command_paths(draft.name),
+            (draft.task, draft.verification, draft.requirements),
+            strict=True,
+        )
+    )
+    if original is not None and (
+        draft.name != original.name or read_original(original.name) != original
+    ):
+        print("ayi: command changed during modification; no files replaced", file=sys.stderr)
+        return 75
+    if original is None and any(path.exists() or path.is_symlink() for path in files):
         print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
     paths = [str(path.relative_to(REPO)) for path in files]
@@ -160,7 +207,7 @@ def register(verified: _VerifiedDraft) -> int:
     )
     if tracked.returncode:
         return tracked.returncode
-    if tracked.stdout:
+    if original is None and tracked.stdout:
         print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
     written: list[Path] = []
@@ -168,9 +215,9 @@ def register(verified: _VerifiedDraft) -> int:
     try:
         for path, content in files.items():
             path.parent.mkdir(exist_ok=True)
-            with path.open("xb") as output:
+            with path.open("wb" if original is not None else "xb") as output:
+                written.append(path)
                 _ = output.write(content)
-            written.append(path)
             path.chmod(0o644 if path.suffix == ".md" else 0o755)
         added = subprocess.run(git_arguments("add", "--", *paths), check=False)
         if added.returncode:
@@ -180,7 +227,7 @@ def register(verified: _VerifiedDraft) -> int:
                 "commit",
                 "--only",
                 "-m",
-                f"feat: add ayi command {draft.name}",
+                f"feat: {'modify' if original else 'add'} ayi command {draft.name}",
                 "--",
                 *paths,
             ),
@@ -192,10 +239,22 @@ def register(verified: _VerifiedDraft) -> int:
         if not committed:
             _ = subprocess.run(git_arguments("reset", "-q", "--", *paths), check=False)
             for path in written:
-                path.unlink()
+                previous = original.files[path] if original is not None else None
+                if previous is None:
+                    path.unlink()
+                else:
+                    content, mode = previous
+                    _ = path.write_bytes(content)
+                    path.chmod(mode)
 
 
-def main(arguments: list[str]) -> int:
+def main(
+    arguments: list[str],
+    *,
+    interactive: bool = True,
+    name: str | None = None,
+    original: Original | None = None,
+) -> int:
     if len(arguments) != 1 or not arguments[0].strip():
         print('ayi: usage: ayi create "<description>"', file=sys.stderr)
         return 64
@@ -209,6 +268,7 @@ def main(arguments: list[str]) -> int:
     result = subprocess.run(
         [
             "pi",
+            *([] if interactive else ["--print"]),
             "--no-session",
             "--no-extensions",
             "--no-mcp",
@@ -224,6 +284,7 @@ def main(arguments: list[str]) -> int:
             f"Request: {arguments[0]}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}",
         ],
         cwd=directory,
+        stdin=None if interactive else subprocess.DEVNULL,
         check=False,
     )
     if result.returncode:
@@ -231,6 +292,9 @@ def main(arguments: list[str]) -> int:
     draft = read_draft(directory)
     if isinstance(draft, Rejected):
         print(f"ayi: {draft.reason}. Draft: {directory}", file=sys.stderr)
+        return 65
+    if name is not None and draft.name != name:
+        print(f"ayi: draft changed the agreed command name. Draft: {directory}", file=sys.stderr)
         return 65
     for label, content in (
         ("Requirements", draft.requirements),
@@ -249,7 +313,7 @@ def main(arguments: list[str]) -> int:
     print("Verification passed.")
     if not approved(f"Commit and register {draft.name} in {REPO}?"):
         return 1
-    status = register(verified)
+    status = register(verified, original)
     if status == 0:
         print(f"Invocation: ayi run {draft.name} [args]")
     return status
