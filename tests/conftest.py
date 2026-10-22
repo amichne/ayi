@@ -29,13 +29,30 @@ class Shell:
             check=False,
         )
 
+    def tool(self, name: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(Path(self.env["HOME"]) / ".local/bin" / name), *args],
+            cwd=self.cwd,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
 
 @pytest.fixture
 def shell(tmp_path: Path) -> Shell:
     root = tmp_path / "checkout with spaces"
     (root / "bin").mkdir(parents=True)
     (root / "tasks").mkdir(parents=True)
-    for name in ("bin/ayi", "mise.toml", "pyproject.toml", "uv.lock", ".python-version"):
+    for name in (
+        "bin/ayi",
+        "bin/ayi-tool",
+        "mise.toml",
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+    ):
         source = SOURCE / name
         if source.exists():
             _ = shutil.copy2(source, root / name)
@@ -83,6 +100,9 @@ def shell(tmp_path: Path) -> Shell:
             encoding="utf-8",
         )
         task.chmod(0o755)
+        requirements = root / "requirements" / f"{name}.md"
+        requirements.parent.mkdir(exist_ok=True)
+        _ = requirements.write_text(f"Fixture {name}\n")
     if (root / "mise.toml").exists():
         result = subprocess.run(
             [str(tools / "mise"), "trust", str(root / "mise.toml")],

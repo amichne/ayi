@@ -20,6 +20,11 @@ Write these four files:
 - `verify`: an independent executable that accepts the absolute task path as its first argument.
 
 Use only the `description` key in mise metadata. The registry owns the task directory.
+The caller installs a launcher at ~/.local/bin/<name>; use direct `<name>` invocation
+in examples, never `ayi run`. Implement --help and -h as standalone arguments: print
+useful usage and options to stdout and exit 0 without performing the tool's work.
+The launcher appends the Ayi attribution to help; do not add a duplicate attribution.
+Verification must check --help, including its successful exit and useful output.
 Use a short shell task for simple native CLI orchestration. Use locked uv Python for substantial logic.
 Do not depend on this conversation, the draft directory, or machine-specific paths.
 The verification must assert the requested output and the nearest invalid input or counterexample.

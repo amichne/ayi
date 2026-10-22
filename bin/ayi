@@ -13,35 +13,20 @@ export AYI_CALLER_DIR="$PWD"
 case "${1:-new}" in
     help|-h|--help)
         printf '%s\n' \
-            'Usage: ayi new [prompt] | modify <name> [prompt] | explain <name>' \
-            '       ayi list | inspect <name> | run <name> [args]' \
-            '       ayi create "<description>" | install <plan|apply|uninstall>' \
-            '' 'Run ayi with no arguments to describe a new shell tool.'
+            'Usage: ayi new [--force] <name> [prompt]' \
+            '       ayi modify [--force] <name> [prompt] | explain <name>' \
+            '       ayi list | install <plan|apply|uninstall>' \
+            '' 'Run ayi with no arguments for an interactive tool interview.' \
+            'Created tools are installed in ~/.local/bin; invoke <name> directly.' \
+            '--force replaces existing tools or executable files/links, not directories or dirty registry files.'
         exit 0 ;;
     new|modify|explain)
         exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/factory.py" "$@" ;;
     list)
         [ "$#" -eq 1 ] || { printf 'ayi: usage: ayi list\n' >&2; exit 64; }
         exec mise -C "$ayi_root" tasks ls --local ;;
-    create|install)
-        ayi_action="$1"
+    install)
         shift
-        exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/$ayi_action.py" "$@" ;;
-    run|inspect)
-        ayi_action="$1"
-        shift
-        case "${1:-}" in
-            ''|*[!a-z0-9-]*|[-0-9]*) printf 'ayi: invalid command name: %s\n' "${1:-}" >&2; exit 64 ;;
-        esac
-        ayi_name="$1"
-        shift
-        [ -x "$ayi_root/tasks/$ayi_name" ] || { printf 'ayi: unknown command: %s\n' "$ayi_name" >&2; exit 64; }
-        if [ "$ayi_action" = run ]; then
-            exec mise -C "$ayi_root" run --raw --quiet --skip-tools "$ayi_name" -- "$@"
-        fi
-        [ "$#" -eq 0 ] || { printf 'ayi: usage: ayi inspect <name>\n' >&2; exit 64; }
-        mise -C "$ayi_root" tasks info "$ayi_name"
-        printf '\nInvocation: ayi run %s [args]\n\n' "$ayi_name"
-        cat "$ayi_root/tasks/$ayi_name" ;;
+        exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/install.py" "$@" ;;
     *) printf 'ayi: unknown action: %s\n' "$1" >&2; exit 64 ;;
 esac

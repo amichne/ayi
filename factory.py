@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
 import create
+import install
 
 type Line = Annotated[
     str, StringConstraints(min_length=1, max_length=600, pattern=r"^[^\x00-\x1f\x7f]+$")
@@ -157,20 +157,29 @@ def choose(question: Question, action: str) -> str:
 
 
 def command_context(name: str) -> dict[str, str]:
-    if re.fullmatch(r"[a-z][a-z0-9-]{0,47}", name) is None:
+    if not install.valid_name(name):
         raise FactoryError(f"invalid command name: {name}", 64)
     task, verification, requirements = create.command_paths(name)
     if not task.is_file() or task.is_symlink():
         raise FactoryError(f"unknown command: {name}", 64)
     paths = [task, verification, requirements]
-    # Bundled tasks delegate their implementation to workflows.py.
-    if name in ("ci", "review"):
-        paths.extend([create.ROOT / "workflows.py", create.ROOT / f"prompts/{name}.md"])
     return {
         str(path.relative_to(create.ROOT)): path.read_text()
         for path in paths
         if path.is_file() and not path.is_symlink()
     }
+
+
+def check_destination(name: str, force: bool = False) -> None:
+    if not install.valid_name(name):
+        raise FactoryError(f"invalid command name: {name}", 64)
+    link = install.command_link(name)
+    if link.state == install.LinkState.CONFLICT and (
+        not force or not (link.destination.is_file() or link.destination.is_symlink())
+    ):
+        raise FactoryError(
+            f"installation conflict: {link.destination}; --force can replace files or symlinks, never directories"
+        )
 
 
 def interview(
@@ -212,16 +221,17 @@ def interview(
         ):
             raise FactoryError("Pi returned a question out of sequence.")
         if response.topic == "name" and any(
-            re.fullmatch(r"[a-z][a-z0-9-]{0,47}", option) is None for option in response.options
+            not install.valid_name(option) for option in response.options
         ):
             raise FactoryError("Pi suggested an invalid command name.")
         answer = choose(response, action)
         if response.topic == "name":
-            while re.fullmatch(r"[a-z][a-z0-9-]{0,47}", answer) is None:
+            while not install.valid_name(answer):
                 answer = entry(
                     "Use 1-48 lowercase letters, digits or hyphens; start with a letter:"
                 )
             name = answer
+            check_destination(name)
             if any(path.exists() or path.is_symlink() for path in create.command_paths(name)):
                 raise FactoryError(f"command already exists: {name}; use ayi modify {name}")
         answers.append({"topic": response.topic, "question": response.question, "answer": answer})
@@ -230,17 +240,46 @@ def interview(
 
 def main(arguments: list[str]) -> int:
     action = arguments[0] if arguments else "new"
-    values = arguments[1:]
+    values: list[str] = []
+    force = False
+    literal = False
+    for value in arguments[1:]:
+        if value == "--" and not literal:
+            literal = True
+        elif value == "--force" and not literal:
+            force = True
+        else:
+            values.append(value)
     if (
         action not in ("new", "modify", "explain")
         or (action in ("modify", "explain") and not values)
-        or (action == "explain" and len(values) != 1)
+        or (action == "explain" and (len(values) != 1 or force))
     ):
-        raise FactoryError("usage: ayi new [prompt] | modify <name> [prompt] | explain <name>", 64)
-    name = values.pop(0) if action != "new" else None
-    source = command_context(name) if name is not None else {}
+        raise FactoryError(
+            "usage: ayi new [--force] <name> [prompt] | modify [--force] <name> [prompt] | explain <name>",
+            64,
+        )
+    name = None
+    if values and (action != "new" or len(values) > 1 or not any(c.isspace() for c in values[0])):
+        name = values.pop(0)
+    if force and name is None:
+        raise FactoryError("--force requires an explicit command name", 64)
+    source: dict[str, str] = {}
+    existing = False
+    if name is not None:
+        if not install.valid_name(name):
+            raise FactoryError(f"invalid command name: {name}", 64)
+        existing = any(path.exists() or path.is_symlink() for path in create.command_paths(name))
+        if action == "new" and existing and not force:
+            raise FactoryError(
+                f"command already exists: {name}; use ayi modify {name} or new --force"
+            )
+        if action != "new" or existing:
+            source = command_context(name)
+        if action != "explain":
+            check_destination(name, force)
     original: create.Original | None = None
-    if action == "modify" and name is not None:
+    if action != "explain" and existing and name is not None:
         snapshot = create.read_original(name)
         if isinstance(snapshot, create.Rejected):
             raise FactoryError(
@@ -269,7 +308,7 @@ def main(arguments: list[str]) -> int:
         f"Resolved requirements:\n{ready.requirements}\n"
         f"Request, existing source, and user answers (JSON):\n{transcript}"
     )
-    return create.main([request], interactive=False, name=ready.name, original=original)
+    return create.main([request], name=ready.name, original=original, force=force)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ def main() -> int:
         result = subprocess.run(["uv", "run", "--locked", *arguments], cwd=root, check=False)
         if result.returncode:
             return result.returncode
-    shell_source = ["bin/ayi", "tasks/ci", "tasks/review", "install.sh"]
+    shell_source = ["bin/ayi", "bin/ayi-tool", "install.sh"]
     for arguments in (
         ["shellcheck", "-S", "warning", *shell_source],
         *(["bash", "-n", name] for name in shell_source),

@@ -9,6 +9,12 @@ import pytest
 from .conftest import Shell, copy_runtime, init_git
 
 
+def new_command(
+    shell: Shell, prompt: str, *, input_text: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return shell.run("new", "greet", prompt, input_text="1\n" + input_text)
+
+
 @pytest.mark.parametrize("reject_commit", [False, True])
 def test_creation_keeps_the_dotfiles_index_separate(shell: Shell, reject_commit: bool) -> None:
     prepare(shell)
@@ -28,7 +34,7 @@ def test_creation_keeps_the_dotfiles_index_separate(shell: Shell, reject_commit:
         hook = shell.root / ".git/hooks/pre-commit"
         _ = hook.write_text('#!/bin/sh\nprintf attempted > "$HOME/hook-ran"\nexit 1\n')
         hook.chmod(0o755)
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     task = shell.root / "tasks/greet"
     if reject_commit:
         assert result.returncode != 0
@@ -65,11 +71,15 @@ def test_creation_keeps_the_dotfiles_index_separate(shell: Shell, reject_commit:
 
 
 def prepare(shell: Shell, *, ready: bool = True, passes: bool = True) -> None:
-    copy_runtime(shell, "create.py", "install.py", "prompts", ".gitignore")
+    copy_runtime(shell, "create.py", "factory.py", "install.py", "prompts", ".gitignore")
     init_git(shell)
     fake = Path(shell.env["PATH"].split(":")[0]) / "pi"
     _ = fake.write_text(
-        f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n"
+        f"#!{sys.executable}\nfrom pathlib import Path\nimport sys,json\n"
+        "if '--no-tools' in sys.argv:\n"
+        " request = json.loads(sys.argv[-1])\n"
+        " reply = dict(status='question', topic='usage', question='How should greet receive input?', options=['greet NAME','greet --name NAME']) if request['required_topic'] else dict(status='ready', name='greet', requirements='Print a literal greeting.')\n"
+        " print(json.dumps(reply))\n sys.exit(0)\n"
         "Path('pi-args').write_text(repr(sys.argv[1:]))\n"
         f"Path('proposal.toml').write_text('name = \\\"greet\\\"\\nstatus = \\\"{'ready' if ready else 'needs-input'}\\\"\\n')\n"
         "Path('requirements.md').write_text('Print a literal greeting. No network.\\n')\n"
@@ -90,14 +100,14 @@ def test_review_verify_commit_register(shell: Shell) -> None:
     _ = subprocess.run(
         ["git", "-C", str(shell.root), "add", "unrelated"], env=shell.env, check=True
     )
-    result = shell.run("create", "Print a greeting with a name", input_text="y\ny\n")
+    result = new_command(shell, "Print a greeting with a name", input_text="y\ny\n")
     assert result.returncode == 0, result.stderr + result.stdout
     assert result.stdout.index("Print a greeting") < result.stdout.index("Run this verification?")
     assert "Verification passed" in result.stdout
-    assert "Invocation: ayi run greet" in result.stdout
+    assert "Invocation: greet" in result.stdout
     task = shell.root / "tasks/greet"
     assert task.is_file()
-    execution = shell.run("run", "greet", "space name")
+    execution = shell.tool("greet", "space name")
     assert execution.returncode == 0, execution.stderr
     assert execution.stdout == "hello space name\n"
     tracked = subprocess.run(
@@ -125,7 +135,7 @@ def test_review_verify_commit_register(shell: Shell) -> None:
 
 def test_unresolved_requirements_cannot_register(shell: Shell) -> None:
     prepare(shell, ready=False)
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert result.returncode != 0
     assert "needs-input" in result.stderr
     assert not (shell.root / "tasks/greet").exists()
@@ -133,14 +143,14 @@ def test_unresolved_requirements_cannot_register(shell: Shell) -> None:
 
 def test_failed_verification_cannot_register(shell: Shell) -> None:
     prepare(shell, passes=False)
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert result.returncode == 17, result.stderr + result.stdout
     assert not (shell.root / "tasks/greet").exists()
 
 
 def test_decline_keeps_draft_unregistered(shell: Shell) -> None:
     prepare(shell)
-    result = shell.run("create", "Greet", input_text="n\n")
+    result = new_command(shell, "Greet", input_text="n\n")
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
     assert list((shell.root / "drafts").glob("*/task"))
@@ -148,7 +158,7 @@ def test_decline_keeps_draft_unregistered(shell: Shell) -> None:
 
 def test_decline_registration_keeps_verified_task_unregistered(shell: Shell) -> None:
     prepare(shell)
-    result = shell.run("create", "Greet", input_text="y\nn\n")
+    result = new_command(shell, "Greet", input_text="y\nn\n")
     assert "Verification passed" in result.stdout
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
@@ -159,11 +169,12 @@ def test_commit_failure_removes_unregistered_files(shell: Shell) -> None:
     hook = shell.root / ".git/hooks/pre-commit"
     _ = hook.write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert "Verification passed" in result.stdout
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
     assert not (shell.root / "verification/greet").exists()
+    assert not (Path(shell.env["HOME"]) / ".local/bin/greet").is_symlink()
 
 
 @pytest.mark.parametrize("state", ["deleted", "staged-deletion", "staged-addition"])
@@ -189,7 +200,7 @@ def test_deleted_git_path_cannot_be_reused(shell: Shell, state: str) -> None:
         capture_output=True,
         check=True,
     ).stdout
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert result.returncode == 65, result.stderr + result.stdout
     assert "command already exists" in result.stderr
     assert not task.exists()
@@ -207,7 +218,7 @@ def test_deleted_git_path_cannot_be_reused(shell: Shell, state: str) -> None:
 
 def test_generated_command_survives_clone(shell: Shell) -> None:
     prepare(shell)
-    assert shell.run("create", "Greet", input_text="y\ny\n").returncode == 0
+    assert new_command(shell, "Greet", input_text="y\ny\n").returncode == 0
     clone = shell.cwd / "generated clone"
     _ = subprocess.run(
         ["git", "clone", "--quiet", str(shell.root), str(clone)],
@@ -226,7 +237,7 @@ def test_generated_command_survives_clone(shell: Shell) -> None:
     )
     fresh = Shell(clone, shell.cwd, env)
     assert fresh.run("install", "apply").returncode == 0
-    result = fresh.run("run", "greet", "from Git")
+    result = fresh.tool("greet", "from Git")
     assert result.returncode == 0, result.stderr
     assert result.stdout == "hello from Git\n"
 
@@ -234,14 +245,19 @@ def test_generated_command_survives_clone(shell: Shell) -> None:
 def test_mutated_verification_input_cannot_register(shell: Shell) -> None:
     prepare(shell)
     pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    marker = shell.cwd / "unreviewed-code-executed"
+    replacement = f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    verification = (
+        f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n"
+        f"Path(sys.argv[1]).write_text({replacement!r})\n"
+    )
     with pi.open("a") as script:
-        _ = script.write(
-            "Path('verify').write_text('#!/bin/bash\\nprintf changed >> \\\"$1\\\"\\n')\n"
-        )
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+        _ = script.write(f"Path('verify').write_text({verification!r})\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert result.returncode == 65, result.stderr
     assert "verification changed its inputs" in result.stderr
     assert not (shell.root / "tasks/greet").exists()
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("marker", ["# MISE", "# [MISE]", "// MISE", ":: MISE", "#MISE\t"])
@@ -251,7 +267,7 @@ def test_alternate_mise_metadata_cannot_bypass_draft_contract(shell: Shell, mark
     with pi.open("a") as script:
         line = f'{marker} env={{UNREVIEWED="value"}}\n'
         _ = script.write(f"with Path('task').open('a') as f: f.write({line!r})\n")
-    result = shell.run("create", "Greet", input_text="y\ny\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
     assert result.returncode == 65, result.stderr
     assert "invalid draft" in result.stderr
     assert not (shell.root / "tasks/greet").exists()

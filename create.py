@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+import install
+
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT
 
@@ -98,7 +100,7 @@ def read_draft(directory: Path) -> Draft | Rejected:
             set(proposal) != {"name", "status"}
             or proposal.get("status") != "ready"
             or not isinstance(name, str)
-            or re.fullmatch(r"[a-z][a-z0-9-]{0,47}", name) is None
+            or not install.valid_name(name)
         ):
             return Rejected(Rejection.INVALID)
         contents: list[bytes] = []
@@ -175,6 +177,19 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
             return VerificationFailed(65)
         if result.returncode:
             return VerificationFailed(result.returncode)
+        help_result = subprocess.run(
+            [str(task), "--help"],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            check=False,
+        )
+        if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
+            print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
+            return VerificationFailed(65)
+        if help_result.returncode or not help_result.stdout.strip():
+            print("ayi: tool must provide nonempty --help output and exit 0", file=sys.stderr)
+            return VerificationFailed(65)
         return _VerifiedDraft(draft)
 
 
@@ -182,8 +197,19 @@ def git_arguments(*arguments: str) -> list[str]:
     return ["git", "-C", str(REPO), *arguments]
 
 
-def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
+def register(
+    verified: _VerifiedDraft, original: Original | None = None, *, force: bool = False
+) -> int:
     draft = verified.draft
+    link = install.command_link(draft.name)
+    if link.state == install.LinkState.CONFLICT and (
+        not force or not (link.destination.is_file() or link.destination.is_symlink())
+    ):
+        print(
+            f"ayi: installation conflict: {link.destination}; --force can replace files or symlinks, never directories",
+            file=sys.stderr,
+        )
+        return 65
     files = dict(
         zip(
             command_paths(draft.name),
@@ -212,6 +238,8 @@ def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
         return 65
     written: list[Path] = []
     committed = False
+    linked = False
+    backup: Path | None = None
     try:
         for path, content in files.items():
             path.parent.mkdir(exist_ok=True)
@@ -219,6 +247,16 @@ def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
                 written.append(path)
                 _ = output.write(content)
             path.chmod(0o644 if path.suffix == ".md" else 0o755)
+        if link.state != install.LinkState.OWNED:
+            link.destination.parent.mkdir(parents=True, exist_ok=True)
+            if link.state == install.LinkState.CONFLICT:
+                backup = (
+                    Path(tempfile.mkdtemp(prefix=".ayi-backup-", dir=link.destination.parent))
+                    / draft.name
+                )
+                _ = link.destination.rename(backup)
+            link.destination.symlink_to(link.source)
+            linked = True
         added = subprocess.run(git_arguments("add", "--", *paths), check=False)
         if added.returncode:
             return added.returncode
@@ -237,6 +275,16 @@ def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
         return result.returncode
     finally:
         if not committed:
+            if linked and install.command_link(draft.name).state == install.LinkState.OWNED:
+                link.destination.unlink()
+            if backup is not None and (backup.exists() or backup.is_symlink()):
+                if link.destination.exists() or link.destination.is_symlink():
+                    print(
+                        f"ayi: installation target changed; original preserved at {backup}",
+                        file=sys.stderr,
+                    )
+                else:
+                    _ = backup.rename(link.destination)
             _ = subprocess.run(git_arguments("reset", "-q", "--", *paths), check=False)
             for path in written:
                 previous = original.files[path] if original is not None else None
@@ -246,17 +294,22 @@ def register(verified: _VerifiedDraft, original: Original | None = None) -> int:
                     content, mode = previous
                     _ = path.write_bytes(content)
                     path.chmod(mode)
+        if backup is not None:
+            if committed and (backup.exists() or backup.is_symlink()):
+                backup.unlink()
+            if not any(backup.parent.iterdir()):
+                backup.parent.rmdir()
 
 
 def main(
     arguments: list[str],
     *,
-    interactive: bool = True,
     name: str | None = None,
     original: Original | None = None,
+    force: bool = False,
 ) -> int:
     if len(arguments) != 1 or not arguments[0].strip():
-        print('ayi: usage: ayi create "<description>"', file=sys.stderr)
+        print('ayi: usage: ayi new <name> "<description>"', file=sys.stderr)
         return 64
     if shutil.which("pi") is None:
         print("ayi: missing dependency: pi", file=sys.stderr)
@@ -268,7 +321,7 @@ def main(
     result = subprocess.run(
         [
             "pi",
-            *([] if interactive else ["--print"]),
+            "--print",
             "--no-session",
             "--no-extensions",
             "--no-mcp",
@@ -284,7 +337,7 @@ def main(
             f"Request: {arguments[0]}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}",
         ],
         cwd=directory,
-        stdin=None if interactive else subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
         check=False,
     )
     if result.returncode:
@@ -311,11 +364,19 @@ def main(
         )
         return verified.status
     print("Verification passed.")
-    if not approved(f"Commit and register {draft.name} in {REPO}?"):
+    destination = install.command_link(draft.name).destination
+    if not approved(
+        f"Commit and register {draft.name} in {REPO}, and {'replace' if force else 'install'} {destination}?"
+    ):
         return 1
-    status = register(verified, original)
+    status = register(verified, original, force=force)
     if status == 0:
-        print(f"Invocation: ayi run {draft.name} [args]")
+        print(f"Installed: {destination}\nInvocation: {draft.name} [args]")
+        if str(destination.parent) not in os.get_exec_path():
+            print(
+                f"ayi: add {destination.parent} to PATH to invoke {draft.name} by name",
+                file=sys.stderr,
+            )
     return status
 
 

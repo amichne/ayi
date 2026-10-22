@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Diagnose PR CI failures"
-set -euo pipefail
-ayi_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/workflows.py" ci "$@"

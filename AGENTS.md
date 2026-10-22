@@ -3,8 +3,9 @@
 `mise.toml` owns task discovery. `tasks/` contains ordinary executables.
 `create.py` owns draft review, verification, and local Git registration.
 The registry uses this checkout's Git index. Keep dotfiles and HOME Git indexes separate.
-`workflows.py` owns GitHub data and local reports. Pi receives evidence with its tools disabled.
-`install.py` owns the two installed links. Keep shell startup outside this installer.
+`factory.py` owns the model-driven tool interview and read-only explanations.
+`install.py` owns installed link discovery and ownership. `bin/ayi-tool` dispatches direct tool invocations.
+Keep shell startup outside the installer. Force never bypasses review, verification, or dirty-registry protection.
 `bootstrap.py` owns archive installation and the private Git registry.
 Its seed commands ignore ambient Git repository and index selectors.
 `install.sh` is generated from `bootstrap.py`. Regenerate it with

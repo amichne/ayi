@@ -10,12 +10,7 @@ from .conftest import Shell, copy_runtime, init_git
 
 
 def prepare(shell: Shell) -> None:
-    copy_runtime(shell, "install.py", "prompts", "workflows.py", ".gitignore")
-    for name in ("ci", "review"):
-        source = Path(__file__).resolve().parents[1] / "tasks" / name
-        target = shell.root / "tasks" / name
-        _ = target.write_bytes(source.read_bytes())
-        target.chmod(0o755)
+    copy_runtime(shell, "install.py", ".gitignore")
 
 
 def test_plan_apply_fresh_shell_uninstall(shell: Shell) -> None:
@@ -34,7 +29,7 @@ def test_plan_apply_fresh_shell_uninstall(shell: Shell) -> None:
     env = dict(shell.env, PATH=f"{home / '.local/bin'}:{shell.env['PATH']}")
     for name in ("one", "two"):
         result = subprocess.run(
-            ["/bin/zsh", "-f", "-c", 'ayi list && ayi run "$1" "two words"', "zsh", name],
+            ["/bin/zsh", "-f", "-c", 'ayi list && "$1" "two words"', "zsh", name],
             cwd=shell.cwd,
             env=env,
             capture_output=True,
@@ -50,6 +45,8 @@ def test_plan_apply_fresh_shell_uninstall(shell: Shell) -> None:
     assert removed.returncode == 0, removed.stderr
     assert not (home / ".local/bin/ayi").is_symlink()
     assert not (Path(shell.env["XDG_CONFIG_HOME"]) / "ayi").is_symlink()
+    assert not (home / ".local/bin/one").is_symlink()
+    assert not (home / ".local/bin/two").is_symlink()
     assert startup.read_bytes() == before
 
 
@@ -109,10 +106,8 @@ def test_clean_clone_recovers_commands(shell: Shell) -> None:
     fresh = Shell(clone, shell.cwd, shell.env)
     assert fresh.run("install", "apply").returncode == 0
     for name in ("one", "two"):
-        result = fresh.run("run", name, "from clone")
+        result = fresh.tool(name, "from clone")
         assert result.returncode == 0, result.stderr
         assert result.stdout.endswith("from clone\n")
     listed = fresh.run("list")
-    assert "ci" in listed.stdout and "review" in listed.stdout
-    for name in ("ci", "review"):
-        assert fresh.run("run", name, "--help").returncode == 0
+    assert "one" in listed.stdout and "two" in listed.stdout

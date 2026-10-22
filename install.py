@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,28 @@ class Link:
     state: LinkState
 
 
+def valid_name(name: str) -> bool:
+    return (
+        name not in ("ayi", "ayi-tool") and re.fullmatch(r"[a-z][a-z0-9-]{0,47}", name) is not None
+    )
+
+
+def link_for(source: Path, destination: Path) -> Link:
+    if destination.is_symlink() and destination.resolve() == source:
+        state = LinkState.OWNED
+    elif destination.exists() or destination.is_symlink():
+        state = LinkState.CONFLICT
+    else:
+        state = LinkState.ABSENT
+    return Link(source, destination, state)
+
+
+def command_link(name: str, home: Path | None = None) -> Link:
+    if not valid_name(name):
+        raise ValueError(f"invalid command name: {name}")
+    return link_for(ROOT / "bin/ayi-tool", (home or Path.home()) / ".local/bin" / name)
+
+
 def links_for(home: Path, config: Path) -> tuple[Link, ...]:
     if not config.is_absolute():
         raise ValueError("XDG_CONFIG_HOME must be absolute")
@@ -31,13 +54,11 @@ def links_for(home: Path, config: Path) -> tuple[Link, ...]:
         (ROOT / "bin/ayi", home / ".local/bin/ayi"),
         (ROOT, config / "ayi"),
     ):
-        if destination.is_symlink() and destination.resolve() == source:
-            state = LinkState.OWNED
-        elif destination.exists() or destination.is_symlink():
-            state = LinkState.CONFLICT
-        else:
-            state = LinkState.ABSENT
-        result.append(Link(source, destination, state))
+        result.append(link_for(source, destination))
+    for requirements in sorted((ROOT / "requirements").glob("*.md")):
+        name = requirements.stem
+        if valid_name(name) and (ROOT / "tasks" / name).is_file():
+            result.append(command_link(name, home))
     return tuple(result)
 
 

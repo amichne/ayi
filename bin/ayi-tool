@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ayi_name="${0##*/}"
+case "$ayi_name" in
+    ayi|ayi-tool|''|*[!a-z0-9-]*|[-0-9]*) printf 'ayi: invoke this launcher through an installed tool name\n' >&2; exit 64 ;;
+esac
+
+ayi_source="${BASH_SOURCE[0]}"
+while [ -L "$ayi_source" ]; do
+    ayi_parent="$(cd "$(dirname "$ayi_source")" && pwd -P)"
+    ayi_source="$(readlink "$ayi_source")"
+    [[ "$ayi_source" = /* ]] || ayi_source="$ayi_parent/$ayi_source"
+done
+ayi_root="$(cd "$(dirname "$ayi_source")/.." && pwd -P)"
+ayi_task="$ayi_root/tasks/$ayi_name"
+[ -x "$ayi_task" ] || { printf 'ayi: unavailable tool: %s\n' "$ayi_name" >&2; exit 69; }
+export AYI_CALLER_DIR="$PWD"
+
+if [ "$#" -eq 1 ] && { [ "$1" = --help ] || [ "$1" = -h ]; }; then
+    ayi_status=0
+    "$ayi_task" "$@" || ayi_status=$?
+    printf '\nCreated with ayi. Manage this tool with: ayi modify %s\n' "$ayi_name"
+    exit "$ayi_status"
+fi
+exec "$ayi_task" "$@"
