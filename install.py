@@ -75,6 +75,7 @@ def main(arguments: list[str]) -> int:
     for target in targets:
         print(f"{target.state.value}: {target.destination} -> {target.source}")
     print(f"mise trust: {ROOT / 'mise.toml'}")
+    print('Zsh completion (opt-in, after compinit): eval "$(ayi shell init zsh)"')
     if arguments == ["plan"]:
         return 0
     if any(target.state == LinkState.CONFLICT for target in targets):

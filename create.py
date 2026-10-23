@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from pydantic import ValidationError
+
 import install
 import ui
+from interface import Interface
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT
@@ -37,6 +40,7 @@ class Draft:
     task: bytes
     verification: bytes
     requirements: bytes
+    interface: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -55,11 +59,12 @@ class Original:
     files: dict[Path, tuple[bytes, int] | None]
 
 
-def command_paths(name: str) -> tuple[Path, Path, Path]:
+def command_paths(name: str) -> tuple[Path, Path, Path, Path]:
     return (
         ROOT / "tasks" / name,
         ROOT / "verification" / name,
         ROOT / "requirements" / f"{name}.md",
+        ROOT / "interface" / f"{name}.json",
     )
 
 
@@ -133,8 +138,14 @@ def read_draft(directory: Path) -> Draft | Rejected:
             or not metadata["description"].strip()
         ):
             return Rejected(Rejection.INVALID)
-        return Draft(name, task, verification, requirements)
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        interface_path = directory / "interface.json"
+        if interface_path.is_symlink():
+            return Rejected(Rejection.INVALID)
+        interface = interface_path.read_bytes() if interface_path.exists() else None
+        if interface is not None and Interface.model_validate_json(interface).name != name:
+            return Rejected(Rejection.INVALID)
+        return Draft(name, task, verification, requirements, interface)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValidationError):
         return Rejected(Rejection.INVALID)
 
 
@@ -208,13 +219,15 @@ def register(
             file=sys.stderr,
         )
         return 65
-    files = dict(
-        zip(
+    files = {
+        path: content
+        for path, content in zip(
             command_paths(draft.name),
-            (draft.task, draft.verification, draft.requirements),
+            (draft.task, draft.verification, draft.requirements, draft.interface),
             strict=True,
         )
-    )
+        if content is not None
+    }
     if original is not None and (
         draft.name != original.name or read_original(original.name) != original
     ):
@@ -244,7 +257,7 @@ def register(
             with path.open("wb" if original is not None else "xb") as output:
                 written.append(path)
                 _ = output.write(content)
-            path.chmod(0o644 if path.suffix == ".md" else 0o755)
+            path.chmod(0o644 if path.suffix in (".md", ".json") else 0o755)
         if link.state != install.LinkState.OWNED:
             link.destination.parent.mkdir(parents=True, exist_ok=True)
             if link.state == install.LinkState.CONFLICT:
@@ -353,7 +366,10 @@ def main(
         ("Requirements", draft.requirements, command_paths(draft.name)[2]),
         ("Task", draft.task, command_paths(draft.name)[0]),
         ("Verification", draft.verification, command_paths(draft.name)[1]),
+        ("Interface", draft.interface, command_paths(draft.name)[3]),
     ):
+        if content is None:
+            continue
         previous = original.files.get(path) if original is not None else None
         ui.review(label, content, previous[0] if previous else None)
     if not approved("Run this verification?"):

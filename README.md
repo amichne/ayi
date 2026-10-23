@@ -124,6 +124,44 @@ Review shows proposed source or a diff against installed source, then requests e
 verification and registration approvals. Diagnostics and progress go to stderr; command results
 stay on stdout. Animations run only while work is pending on an interactive terminal.
 
+### Completion
+
+After installing Ayi, explicitly source its integration **after `compinit`** in your Zsh configuration:
+
+```zsh
+autoload -Uz compinit
+compinit
+eval "$(ayi shell init zsh)"
+```
+
+The installer never edits startup files. The integration registers Ayi and its owned installed
+tool links, and a prompt hook refreshes registrations when registry/link membership changes.
+There is no Python process on unchanged prompts, no daemon, and no per-tool shell script.
+Tab completes option names, declared choices, files, and directories. File names with spaces
+are shell-quoted. Completion never invokes Pi or runs a tool. It uses the already initialized
+locked runtime without uv synchronization or bytecode writes; for a source checkout, first run
+`ayi install plan` (or `uv sync --locked`). Bash, Fish, and custom dynamic providers are not
+supported yet; unknown provider kinds are rejected rather than executed.
+
+`interface/<name>.json` uses schema version 1 and declares `name`, `summary`, `positionals`,
+`options`, optional invocation `examples`, and output capabilities (`text`, `json`, `jsonl`,
+or `native`). Each value has an explicit completion kind: `none`, `choices` (with `values`),
+`file`, or `directory`. Option aliases must be unique. Only the final positional may repeat.
+Legacy commands without a manifest still run; no interface is guessed from their help.
+
+The read-only JSON API is `ayi complete`, receiving one request on stdin:
+
+```json
+{"command":"large-files","args":["--sort","s"],"cursor":1,"cwd":"/tmp"}
+```
+
+`cursor` is the zero-based active **token** index, not a byte offset. Supply only the active
+token's prefix before the text cursor. An index equal to `args` length means a trailing empty
+token. Results are an array of `{value, description, kind}` candidates; `kind` is `value`,
+`file`, or `directory`. `--` ends option completion and `--option=value` is supported.
+No candidates is a successful empty array. Invalid manifests/requests fail on stderr, never
+as candidate text. Options use separate values or long-option equals syntax, not short clusters.
+
 Pi uses its existing authentication and model settings. Interview and explanation calls
 have tools disabled. After the interview, Pi writes a draft and exits automatically;
 there is no Pi session to quit. Draft generation enables only read/write/edit file tools,

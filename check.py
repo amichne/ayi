@@ -24,6 +24,7 @@ def main() -> int:
     for arguments in (
         ["shellcheck", "-S", "warning", *shell_source],
         *(["bash", "-n", name] for name in shell_source),
+        ["zsh", "-n", "shell/ayi.zsh"],
     ):
         result = subprocess.run(arguments, cwd=root, check=False)
         if result.returncode:

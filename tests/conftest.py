@@ -53,10 +53,14 @@ def shell(tmp_path: Path) -> Shell:
         "uv.lock",
         ".python-version",
         "ui.py",
+        "interface.py",
+        "completion.py",
+        "shell.py",
     ):
         source = SOURCE / name
         if source.exists():
             _ = shutil.copy2(source, root / name)
+    _ = shutil.copytree(SOURCE / "shell", root / "shell")
     home = tmp_path / "home"
     home.mkdir()
     tools = tmp_path / "bin"

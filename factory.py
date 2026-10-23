@@ -110,10 +110,9 @@ def choose(question: Question, action: str) -> str:
 def command_context(name: str) -> dict[str, str]:
     if not install.valid_name(name):
         raise FactoryError(f"invalid command name: {name}", 64)
-    task, verification, requirements = create.command_paths(name)
-    if not task.is_file() or task.is_symlink():
+    paths = create.command_paths(name)
+    if not paths[0].is_file() or paths[0].is_symlink():
         raise FactoryError(f"unknown command: {name}", 64)
-    paths = [task, verification, requirements]
     return {
         str(path.relative_to(create.ROOT)): path.read_text()
         for path in paths

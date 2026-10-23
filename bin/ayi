@@ -16,6 +16,7 @@ case "${1:-new}" in
             'Usage: ayi new [--force] <name> [prompt]' \
             '       ayi modify [--force] <name> [prompt] | explain <name>' \
             '       ayi list | install <plan|apply|uninstall>' \
+            '       ayi shell init zsh | complete < request.json' \
             '' 'Run ayi with no arguments for an interactive tool interview.' \
             'Created tools are installed in ~/.local/bin; invoke <name> directly.' \
             '--force replaces existing tools or executable files/links, not directories or dirty registry files.'
@@ -28,5 +29,14 @@ case "${1:-new}" in
     install)
         shift
         exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/install.py" "$@" ;;
+    shell)
+        shift
+        [ -x "$ayi_root/.venv/bin/python" ] || { printf 'ayi: initialize the locked runtime with ayi install plan first\n' >&2; exit 69; }
+        exec "$ayi_root/.venv/bin/python" -B "$ayi_root/shell.py" "$@" ;;
+    complete)
+        shift
+        [ -x "$ayi_root/.venv/bin/python" ] || { printf 'ayi: initialize the locked runtime with ayi install plan first\n' >&2; exit 69; }
+        export PYDANTIC_DISABLE_PLUGINS=__all__
+        exec "$ayi_root/.venv/bin/python" -B "$ayi_root/completion.py" "$@" ;;
     *) printf 'ayi: unknown action: %s\n' "$1" >&2; exit 64 ;;
 esac
