@@ -50,7 +50,7 @@ elif mode == "interview":
             assert "tasks/greet" in request["source"]
             if (home / "concurrent-edit").exists():
                 root = Path(args[args.index("--append-system-prompt") + 1]).parents[1]
-                (root / "tasks/greet").write_text("concurrent edit\\n")
+                (root / (home / "concurrent-edit").read_text()).write_text("concurrent edit\\n")
         (home / "agreed-name").write_text(request["name"])
         reply = dict(status="ready", name=request["name"], requirements="Print hello NAME, preserving spaces. No network.")
     print(json.dumps(reply))
@@ -61,8 +61,9 @@ else:
     name = (home / "agreed-name").read_text()
     Path("proposal.toml").write_text(f'name = "{name}"\\nstatus = "ready"\\n')
     Path("requirements.md").write_text("Print hello NAME, preserving spaces. No network.\\n")
-    Path("task").write_text(f'#!/bin/bash\\n#MISE description="Greet a name"\\nif [ "${{1:-}}" = --help ]; then printf "Usage: {name} NAME\\\\n"; exit 0; fi\\nprintf "hello %s\\\\n" "$1"\\n')
-    Path("verify").write_text('#!/bin/bash\\nset -eu\\ntest "$("$1" "space name")" = "hello space name"\\n')
+    Path("interface.json").write_text(json.dumps(dict(schemaVersion=1, name=name, summary="Greet a name", positionals=[dict(name="NAME", required=True, completion=dict(kind="none"))], examples=[name + " Ada"])))
+    Path("task").write_text(f'#!/bin/bash\\n#MISE description="Greet a name"\\ncase "${{1:-}}" in --help|-h) printf "Usage: {name} NAME\\\\n"; exit 0;; -*) exit 64;; esac\\nprintf "hello %s\\\\n" "$1"\\n')
+    Path("verify").write_text('#!/bin/bash\\nset -eu\\ntest -s "$2"\\ntest "$("$1" "space name")" = "hello space name"\\n')
 """
     )
     pi.chmod(0o755)
@@ -152,11 +153,15 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         for name, content in (
             ("verification/greet", "#!/bin/sh\nexit 0\n"),
             ("requirements/greet.md", "Old requirements\n"),
+            (
+                "interface/greet.json",
+                '{"schemaVersion":1,"name":"greet","summary":"Old greeting"}\n',
+            ),
         ):
             path = shell.root / name
             path.parent.mkdir(exist_ok=True)
             _ = path.write_text(content)
-        _ = git(shell, "add", "verification/greet", "requirements/greet.md")
+        _ = git(shell, "add", "verification/greet", "requirements/greet.md", "interface/greet.json")
         _ = git(shell, "commit", "-qm", "supporting files")
     originals = {
         path: (path.read_bytes(), path.stat().st_mode)
@@ -164,6 +169,7 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
             shell.root / "tasks/greet",
             shell.root / "verification/greet",
             shell.root / "requirements/greet.md",
+            shell.root / "interface/greet.json",
         )
         if path.exists()
     }
@@ -178,10 +184,11 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         "modify", "greet", "Use hello", input_text="Use hello, preserve spaces\ny\ny\n"
     )
     assert result.returncode != 0
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     for path, expected in originals.items():
         assert (path.read_bytes(), path.stat().st_mode) == expected
     assert (shell.root / "verification/greet").exists() == has_supporting_files
+    assert (shell.root / "interface/greet.json").exists() == has_supporting_files
     assert git(shell, "ls-files", "--stage") == before_index
     hook.unlink()
     result = shell.run(
@@ -194,20 +201,29 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         "tasks/greet",
         "verification/greet",
         "requirements/greet.md",
+        "interface/greet.json",
     }
 
 
 @pytest.mark.parametrize("state", ["dirty", "staged", "concurrent", "decline"])
-def test_modify_never_overwrites_unapproved_changes(shell: Shell, state: str) -> None:
+@pytest.mark.parametrize("relative", ["tasks/greet", "interface/greet.json"])
+def test_modify_never_overwrites_unapproved_changes(
+    shell: Shell, state: str, relative: str
+) -> None:
     home = prepare(shell)
     seed_command(shell)
-    task = shell.root / "tasks/greet"
+    interface = shell.root / "interface/greet.json"
+    interface.parent.mkdir()
+    _ = interface.write_text('{"schemaVersion":1,"name":"greet","summary":"Old greeting"}')
+    _ = git(shell, "add", "interface/greet.json")
+    _ = git(shell, "commit", "-qm", "old interface")
+    task = shell.root / relative
     if state in ("dirty", "staged"):
         _ = task.write_text("user changes\n")
         if state == "staged":
-            _ = git(shell, "add", "tasks/greet")
+            _ = git(shell, "add", relative)
     if state == "concurrent":
-        _ = (home / "concurrent-edit").write_text("")
+        _ = (home / "concurrent-edit").write_text(relative)
     before = task.read_text()
     head = git(shell, "rev-parse", "HEAD")
     answer = "n\n" if state == "decline" else "y\n"

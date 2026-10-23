@@ -166,9 +166,11 @@ def test_archive_installs_a_git_registry_and_preserves_registered_commands(shell
             ["git", "-C", str(target.root), "config", key, value], env=shell.env, check=False
         )
         assert result.returncode == 0
+    task_source = b'#!/bin/bash\n#MISE description="Added"\ncase "${1:-}" in --help|-h) echo "Usage: added";; -*) exit 64;; *) echo added;; esac\n'
+    interface_source = b'{"schemaVersion":1,"name":"added","summary":"Added command"}'
     script = (
         "import create\n"
-        "draft = create.Draft('added', b'#!/bin/bash\\n#MISE description=\\\"Added\\\"\\necho added\\n', b'#!/bin/bash\\nexit 0\\n', b'Added command\\n')\n"
+        f"draft = create.Draft('added', {task_source!r}, b'#!/bin/bash\\nexit 0\\n', b'Added command\\n', {interface_source!r})\n"
         "verified = create.verify(draft)\n"
         "assert not isinstance(verified, create.VerificationFailed)\n"
         "raise SystemExit(create.register(verified))\n"
@@ -194,7 +196,8 @@ def test_archive_installs_a_git_registry_and_preserves_registered_commands(shell
         subprocess.check_output(["git", "-C", str(target.root), "rev-parse", "HEAD"], env=shell.env)
         == before
     )
-    assert (target.root / "tasks/added").read_text().endswith("echo added\n")
+    assert (target.root / "tasks/added").read_bytes() == task_source
+    assert (target.root / "interface/added.json").read_bytes() == interface_source
     assert not (Path(shell.env["HOME"]) / ".zshrc").exists()
 
 

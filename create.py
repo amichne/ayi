@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from pydantic import ValidationError
+
 import install
+import ui
+from interface import Interface
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT
@@ -36,6 +40,7 @@ class Draft:
     task: bytes
     verification: bytes
     requirements: bytes
+    interface: bytes
 
 
 @dataclass(frozen=True)
@@ -54,11 +59,12 @@ class Original:
     files: dict[Path, tuple[bytes, int] | None]
 
 
-def command_paths(name: str) -> tuple[Path, Path, Path]:
+def command_paths(name: str) -> tuple[Path, Path, Path, Path]:
     return (
         ROOT / "tasks" / name,
         ROOT / "verification" / name,
         ROOT / "requirements" / f"{name}.md",
+        ROOT / "interface" / f"{name}.json",
     )
 
 
@@ -132,16 +138,19 @@ def read_draft(directory: Path) -> Draft | Rejected:
             or not metadata["description"].strip()
         ):
             return Rejected(Rejection.INVALID)
-        return Draft(name, task, verification, requirements)
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        interface_path = directory / "interface.json"
+        if interface_path.is_symlink() or not interface_path.is_file():
+            return Rejected(Rejection.INVALID)
+        interface = interface_path.read_bytes()
+        if Interface.model_validate_json(interface).name != name:
+            return Rejected(Rejection.INVALID)
+        return Draft(name, task, verification, requirements, interface)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValidationError):
         return Rejected(Rejection.INVALID)
 
 
 def approved(question: str) -> bool:
-    try:
-        return input(f"{question} [y/N] ").strip().lower() == "y"
-    except EOFError:
-        return False
+    return ui.approved(question)
 
 
 def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
@@ -149,8 +158,14 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
         directory = Path(temporary)
         task = directory / "task"
         verification = directory / "verify"
-        _ = task.write_bytes(draft.task)
-        _ = verification.write_bytes(draft.verification)
+        interface_path = directory / "interface.json"
+        inputs = {
+            task: draft.task,
+            verification: draft.verification,
+            interface_path: draft.interface,
+        }
+        for path, content in inputs.items():
+            _ = path.write_bytes(content)
         task.chmod(0o755)
         verification.chmod(0o755)
         home = directory / "home"
@@ -168,28 +183,66 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
         }
         if b"bash" in draft.task.splitlines()[0]:
             for args in (["bash", "-n", str(task)], ["shellcheck", "-S", "warning", str(task)]):
-                result = subprocess.run(args, cwd=directory, env=env, check=False)
+                result = subprocess.run(
+                    args, cwd=directory, env=env, stdout=sys.stderr, check=False
+                )
                 if result.returncode:
                     return VerificationFailed(result.returncode)
-        result = subprocess.run([str(verification), str(task)], cwd=directory, env=env, check=False)
-        if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
+        result = subprocess.run(
+            [str(verification), str(task), str(interface_path)],
+            cwd=directory,
+            env=env,
+            stdout=sys.stderr,
+            check=False,
+        )
+        if any(
+            not path.is_file() or path.is_symlink() or path.read_bytes() != content
+            for path, content in inputs.items()
+        ):
             print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
             return VerificationFailed(65)
         if result.returncode:
             return VerificationFailed(result.returncode)
-        help_result = subprocess.run(
-            [str(task), "--help"],
-            cwd=directory,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
-            print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
-            return VerificationFailed(65)
-        if help_result.returncode or not help_result.stdout.strip():
-            print("ayi: tool must provide nonempty --help output and exit 0", file=sys.stderr)
-            return VerificationFailed(65)
+        interface = Interface.model_validate_json(draft.interface)
+        invalid = "--ayi-invalid-option"
+        declared = {name for option in interface.options for name in option.names}
+        while invalid in declared:
+            invalid += "-x"
+        for flag in ("--help", "-h", invalid):
+            result = subprocess.run(
+                [str(task), flag], cwd=directory, env=env, capture_output=True, check=False
+            )
+            if any(
+                not path.is_file() or path.is_symlink() or path.read_bytes() != content
+                for path, content in inputs.items()
+            ):
+                print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
+                return VerificationFailed(65)
+            if flag == invalid:
+                if result.returncode == 0:
+                    print(
+                        "ayi: tool must reject unknown options with a nonzero exit", file=sys.stderr
+                    )
+                    return VerificationFailed(65)
+            else:
+                if result.returncode or not result.stdout.strip():
+                    print(
+                        f"ayi: tool must provide nonempty {flag} output and exit 0", file=sys.stderr
+                    )
+                    return VerificationFailed(65)
+                help_text = result.stdout.decode(errors="replace")
+                missing = [
+                    name
+                    for option in interface.options
+                    for name in option.names
+                    if not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", help_text)
+                ]
+                if missing:
+                    print(
+                        f"ayi: declared options missing from {flag}: {', '.join(missing)}",
+                        file=sys.stderr,
+                    )
+                    return VerificationFailed(65)
         return _VerifiedDraft(draft)
 
 
@@ -213,7 +266,7 @@ def register(
     files = dict(
         zip(
             command_paths(draft.name),
-            (draft.task, draft.verification, draft.requirements),
+            (draft.task, draft.verification, draft.requirements, draft.interface),
             strict=True,
         )
     )
@@ -246,7 +299,7 @@ def register(
             with path.open("wb" if original is not None else "xb") as output:
                 written.append(path)
                 _ = output.write(content)
-            path.chmod(0o644 if path.suffix == ".md" else 0o755)
+            path.chmod(0o644 if path.suffix in (".md", ".json") else 0o755)
         if link.state != install.LinkState.OWNED:
             link.destination.parent.mkdir(parents=True, exist_ok=True)
             if link.state == install.LinkState.CONFLICT:
@@ -257,7 +310,7 @@ def register(
                 _ = link.destination.rename(backup)
             link.destination.symlink_to(link.source)
             linked = True
-        added = subprocess.run(git_arguments("add", "--", *paths), check=False)
+        added = subprocess.run(git_arguments("add", "--", *paths), stdout=sys.stderr, check=False)
         if added.returncode:
             return added.returncode
         result = subprocess.run(
@@ -269,6 +322,7 @@ def register(
                 "--",
                 *paths,
             ),
+            stdout=sys.stderr,
             check=False,
         )
         committed = result.returncode == 0
@@ -317,7 +371,7 @@ def main(
     drafts = ROOT / "drafts"
     drafts.mkdir(exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="command-", dir=drafts))
-    print(f"Draft: {directory}", flush=True)
+    ui.status(f"Proposed draft: {directory}")
     result = subprocess.run(
         [
             "pi",
@@ -338,6 +392,7 @@ def main(
         ],
         cwd=directory,
         stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
         check=False,
     )
     if result.returncode:
@@ -349,26 +404,31 @@ def main(
     if name is not None and draft.name != name:
         print(f"ayi: draft changed the agreed command name. Draft: {directory}", file=sys.stderr)
         return 65
-    for label, content in (
-        ("Requirements", draft.requirements),
-        ("Task", draft.task),
-        ("Verification", draft.verification),
+    ui.status(f"Generated: {draft.name} (not yet verified or installed)")
+    for label, content, path in (
+        ("Requirements", draft.requirements, command_paths(draft.name)[2]),
+        ("Task", draft.task, command_paths(draft.name)[0]),
+        ("Verification", draft.verification, command_paths(draft.name)[1]),
+        ("Interface", draft.interface, command_paths(draft.name)[3]),
     ):
-        print(f"\n{label}:\n{content.decode()}")
+        previous = original.files.get(path) if original is not None else None
+        ui.review(label, content, previous[0] if previous else None)
     if not approved("Run this verification?"):
         return 1
+    ui.status("Verifying reviewed draft...")
     verified = verify(draft)
     if isinstance(verified, VerificationFailed):
         print(
             f"ayi: verification failed: exit {verified.status}. Draft: {directory}", file=sys.stderr
         )
         return verified.status
-    print("Verification passed.")
+    ui.status("Verification passed.")
     destination = install.command_link(draft.name).destination
     if not approved(
         f"Commit and register {draft.name} in {REPO}, and {'replace' if force else 'install'} {destination}?"
     ):
         return 1
+    ui.status("Registering verified draft...")
     status = register(verified, original, force=force)
     if status == 0:
         print(f"Installed: {destination}\nInvocation: {draft.name} [args]")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,7 @@ def test_creation_keeps_the_dotfiles_index_separate(shell: Shell, reject_commit:
             "tasks/greet",
             "verification/greet",
             "requirements/greet.md",
+            "interface/greet.json",
         }
     staged = subprocess.run(
         [*base, "diff", "--cached", "--name-only"],
@@ -74,6 +76,19 @@ def prepare(shell: Shell, *, ready: bool = True, passes: bool = True) -> None:
     copy_runtime(shell, "create.py", "factory.py", "install.py", "prompts", ".gitignore")
     init_git(shell)
     fake = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    task = (
+        '#!/bin/bash\n#MISE description="Print a greeting"\n'
+        'case "${1:-}" in --help|-h) printf "Usage: greet NAME\\n"; exit 0;; -*) exit 64;; esac\n'
+        'printf "hello %s\\n" "$1"\n'
+    )
+    interface = json.dumps(
+        {
+            "schemaVersion": 1,
+            "name": "greet",
+            "summary": "Print a greeting",
+            "positionals": [{"name": "NAME", "required": True, "completion": {"kind": "none"}}],
+        }
+    )
     _ = fake.write_text(
         f"#!{sys.executable}\nfrom pathlib import Path\nimport sys,json\n"
         "if '--no-tools' in sys.argv:\n"
@@ -83,7 +98,8 @@ def prepare(shell: Shell, *, ready: bool = True, passes: bool = True) -> None:
         "Path('pi-args').write_text(repr(sys.argv[1:]))\n"
         f"Path('proposal.toml').write_text('name = \\\"greet\\\"\\nstatus = \\\"{'ready' if ready else 'needs-input'}\\\"\\n')\n"
         "Path('requirements.md').write_text('Print a literal greeting. No network.\\n')\n"
-        'Path(\'task\').write_text(\'#!/bin/bash\\n#MISE description="Print a greeting"\\nprintf \\"hello %s\\\\n\\" \\"$1\\"\\n\')\n'
+        f"Path('task').write_text({task!r})\n"
+        f"Path('interface.json').write_text({interface!r})\n"
         "Path('verify').write_text('#!/bin/bash\\nset -eu\\n"
         + ('test \\"$(\\"$1\\" world)\\" = \\"hello world\\"\\n' if passes else "exit 17\\n")
         + "')\n",
@@ -102,8 +118,8 @@ def test_review_verify_commit_register(shell: Shell) -> None:
     )
     result = new_command(shell, "Print a greeting with a name", input_text="y\ny\n")
     assert result.returncode == 0, result.stderr + result.stdout
-    assert result.stdout.index("Print a greeting") < result.stdout.index("Run this verification?")
-    assert "Verification passed" in result.stdout
+    assert result.stderr.index("Print a greeting") < result.stderr.index("Run this verification?")
+    assert "Verification passed" in result.stderr
     assert "Invocation: greet" in result.stdout
     task = shell.root / "tasks/greet"
     assert task.is_file()
@@ -121,6 +137,7 @@ def test_review_verify_commit_register(shell: Shell) -> None:
         "tasks/greet",
         "verification/greet",
         "requirements/greet.md",
+        "interface/greet.json",
     }
     assert "unrelated" not in tracked.stdout
     staged = subprocess.run(
@@ -159,7 +176,7 @@ def test_decline_keeps_draft_unregistered(shell: Shell) -> None:
 def test_decline_registration_keeps_verified_task_unregistered(shell: Shell) -> None:
     prepare(shell)
     result = new_command(shell, "Greet", input_text="y\nn\n")
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
 
@@ -170,7 +187,7 @@ def test_commit_failure_removes_unregistered_files(shell: Shell) -> None:
     _ = hook.write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
     result = new_command(shell, "Greet", input_text="y\ny\n")
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
     assert not (shell.root / "verification/greet").exists()
@@ -271,3 +288,143 @@ def test_alternate_mise_metadata_cannot_bypass_draft_contract(shell: Shell, mark
     assert result.returncode == 65, result.stderr
     assert "invalid draft" in result.stderr
     assert not (shell.root / "tasks/greet").exists()
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        '{"schemaVersion":1,"name":"other","summary":"Wrong name"}',
+        '{"schemaVersion":1,"name":"greet","summary":"Bad provider","positionals":[{"name":"input","completion":{"kind":"exec","command":"pi"}}]}',
+    ],
+)
+def test_missing_or_invalid_manifest_cannot_register(shell: Shell, replacement: str | None) -> None:
+    prepare(shell)
+    pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    with pi.open("a") as script:
+        _ = script.write(
+            "Path('interface.json').unlink()\n"
+            if replacement is None
+            else f"Path('interface.json').write_text({replacement!r})\n"
+        )
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 65, result.stderr
+    assert "invalid draft" in result.stderr
+    assert not (shell.root / "tasks/greet").exists()
+    assert not (shell.root / "interface/greet.json").exists()
+
+
+def test_manifest_is_a_reviewed_immutable_verification_input(shell: Shell) -> None:
+    prepare(shell)
+    pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    verification = '#!/bin/bash\nset -eu\ntest -s "$2"\nprintf tampered > "$2"\n'
+    with pi.open("a") as script:
+        _ = script.write(f"Path('verify').write_text({verification!r})\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 65, result.stderr
+    assert "verification changed its inputs" in result.stderr
+    assert not (shell.root / "interface/greet.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["undocumented", "short-help", "unknown-option"])
+def test_independent_interface_checks_reject_parser_drift(shell: Shell, failure: str) -> None:
+    prepare(shell)
+    pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    if failure == "undocumented":
+        # A prefix is not the declared option spelling.
+        patch = "document=json.loads(Path('interface.json').read_text()); document['options']=[dict(names=['--sort'],description='Sort')]; Path('interface.json').write_text(json.dumps(document))\n"
+        patch += "Path('task').write_text(Path('task').read_text().replace('Usage: greet NAME', 'Usage: greet NAME --sorter'))\n"
+    elif failure == "short-help":
+        patch = (
+            "Path('task').write_text(Path('task').read_text().replace('--help|-h)', '--help)'))\n"
+        )
+    else:
+        patch = "Path('task').write_text(Path('task').read_text().replace('-*) exit 64;;', '-*) exit 0;;'))\n"
+    with pi.open("a") as script:
+        _ = script.write(patch)
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 65, result.stderr
+    expected = {
+        "undocumented": "declared options missing",
+        "short-help": "nonempty -h output",
+        "unknown-option": "reject unknown options",
+    }
+    assert expected[failure] in result.stderr
+    assert not (shell.root / "interface/greet.json").exists()
+
+
+def test_generated_options_verify_install_and_complete_together(shell: Shell) -> None:
+    prepare(shell)
+    task = """#!/bin/bash
+#MISE description="Greet with a style"
+case "${1:-}" in
+    --help|-h) printf 'Usage: greet [--style|-s friendly|formal] NAME\n'; exit 0;;
+esac
+style=friendly
+case "${1:-}" in
+    --style|-s)
+        [ "$#" -ge 2 ] || exit 64
+        style=$2
+        shift 2;;
+    --style=*) style=${1#*=}; shift;;
+esac
+[ "$#" -eq 1 ] || exit 64
+case "$1" in -*) exit 64;; esac
+case "$style" in
+    friendly) printf 'hello %s\n' "$1";;
+    formal) printf 'Good day, %s\n' "$1";;
+    *) exit 64;;
+esac
+"""
+    document = {
+        "schemaVersion": 1,
+        "name": "greet",
+        "summary": "Greet with a style",
+        "positionals": [{"name": "NAME", "required": True, "completion": {"kind": "none"}}],
+        "options": [
+            {
+                "names": ["--style", "-s"],
+                "description": "Greeting style",
+                "value": {
+                    "name": "STYLE",
+                    "completion": {"kind": "choices", "values": ["friendly", "formal"]},
+                },
+            }
+        ],
+        "examples": ["greet --style formal Ada"],
+    }
+    verification = f"""#!{sys.executable}
+import json, subprocess, sys
+from pathlib import Path
+task, interface = sys.argv[1:]
+assert json.loads(Path(interface).read_text())["options"][0]["value"]["completion"]["values"] == ["friendly", "formal"]
+for flag in ("--style", "-s"):
+    for style, expected in (("friendly", "hello Ada Lovelace\\n"), ("formal", "Good day, Ada Lovelace\\n")):
+        result = subprocess.run([task, flag, style, "Ada Lovelace"], capture_output=True, text=True)
+        assert result.returncode == 0 and result.stdout == expected
+for args in (["--style", "invalid", "Ada"], ["--style"], [], ["--unknown"]):
+    assert subprocess.run([task, *args], capture_output=True).returncode != 0
+"""
+    pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    with pi.open("a") as script:
+        _ = script.write(
+            f"Path('task').write_text({task!r})\nPath('interface.json').write_text({json.dumps(document)!r})\nPath('verify').write_text({verification!r})\n"
+        )
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 0, result.stderr
+    assert (
+        shell.tool("greet", "--style", "formal", "Grace Hopper").stdout
+        == "Good day, Grace Hopper\n"
+    )
+    assert (
+        shell.tool("greet", "--style=formal", "Grace Hopper").stdout == "Good day, Grace Hopper\n"
+    )
+    candidates = shell.run(
+        "complete",
+        input_text=json.dumps(
+            {"command": "greet", "args": ["--style", "f"], "cursor": 1, "cwd": str(shell.cwd)}
+        ),
+    )
+    assert candidates.returncode == 0, candidates.stderr
+    assert [row["value"] for row in json.loads(candidates.stdout)] == ["friendly", "formal"]
+    assert json.loads((shell.root / "interface/greet.json").read_text()) == document
