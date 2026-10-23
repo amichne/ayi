@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
-import textwrap
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
 import create
 import install
+import ui
 
 type Line = Annotated[
     str, StringConstraints(min_length=1, max_length=600, pattern=r"^[^\x00-\x1f\x7f]+$")
@@ -46,7 +45,11 @@ class FactoryError(Exception):
 
 
 def model(mode: str, request: str) -> str:
-    print(f"ayi / {mode} / thinking...", file=sys.stderr, flush=True)
+    with ui.activity(f"ayi / {mode} / thinking..."):
+        return model_response(mode, request)
+
+
+def model_response(mode: str, request: str) -> str:
     result = subprocess.run(
         [
             "pi",
@@ -77,18 +80,8 @@ def model(mode: str, request: str) -> str:
 
 
 def entry(label: str) -> str:
-    # Python's readline integration supplies cursor editing without storing prompt history.
-    interactive = sys.stdin.isatty() and sys.stdout.isatty()
-    if interactive:
-        try:
-            __import__("readline")
-        except ImportError:
-            pass
-    print(label, file=sys.stderr, flush=True)
-    if not interactive:
-        print("ayi > ", end="", file=sys.stderr, flush=True)
     try:
-        answer = input("ayi > " if interactive else "").strip()
+        answer = ui.entry(label)
     except EOFError:
         raise FactoryError("cancelled", 130) from None
     if not answer:
@@ -97,62 +90,20 @@ def entry(label: str) -> str:
 
 
 def choose(question: Question, action: str) -> str:
-    width = max(20, shutil.get_terminal_size().columns - 4)
     options = [*question.options, "Write a different answer..."]
-    rows = [f"{index}  {option}" for index, option in enumerate(options, 1)]
-    if sys.stdin.isatty() and sys.stderr.isatty() and shutil.which("fzf"):
-        # Do not inherit preview/execute bindings or default commands from shell configuration.
-        env = {
-            key: value for key, value in os.environ.items() if not key.startswith("FZF_DEFAULT_")
-        }
-        result = subprocess.run(
-            [
-                "fzf",
-                "--height=~18",
-                "--layout=reverse",
-                "--border=sharp",
-                "--no-unicode",
-                "--no-multi",
-                "--no-sort",
-                "--wrap",
-                "--prompt=ayi > ",
-                "--header="
-                + f"ayi / {action} / {question.topic}\n"
-                + textwrap.fill(question.question, min(36, width - 4))
-                + "\nEnter: select / Esc: cancel",
-                *(["--no-color"] if "NO_COLOR" in env else []),
-            ],
-            input="\n".join(rows),
-            stdout=subprocess.PIPE,
-            text=True,
-            env=env,
-            check=False,
-        )
-        if result.returncode in (1, 130):
-            raise FactoryError("cancelled", 130)
-        if result.returncode:
-            raise FactoryError(f"fzf failed (exit {result.returncode})", 69)
-        selected = result.stdout.rstrip("\n")
-        if selected not in rows:
-            raise FactoryError("fzf returned an unknown choice")
-        index = rows.index(selected)
-        answer = options[index] if index < len(question.options) else entry("Your answer:")
-    else:
-        print(f"\nayi / {action} / {question.topic}", file=sys.stderr)
-        print(textwrap.fill(question.question, width), file=sys.stderr, flush=True)
-        for row in rows:
-            print(textwrap.fill(row, width, subsequent_indent="   "), file=sys.stderr)
-        while True:
-            value = entry("Choose a number, or type your answer:")
-            if not value.isdecimal():
-                answer = value
-                break
-            if 1 <= int(value) <= len(rows):
-                index = int(value) - 1
-                answer = options[index] if index < len(question.options) else entry("Your answer:")
-                break
-            print("Choose a listed number, or type an answer.", file=sys.stderr)
-    print(f"Selected: {answer}", file=sys.stderr)
+    while True:
+        try:
+            answer = ui.entry(f"{action} / {question.topic}\n{question.question}", options)
+        except EOFError:
+            raise FactoryError("cancelled", 130) from None
+        if not answer:
+            raise FactoryError("cancelled (empty answer)", 130)
+        if not answer.isdecimal():
+            break
+        ui.status("Choose a listed number, or type an answer.")
+    if answer == options[-1]:
+        answer = entry("Your answer:")
+    ui.status(f"Selected: {answer}")
     return answer
 
 
@@ -296,7 +247,7 @@ def main(arguments: list[str]) -> int:
     if shutil.which("pi") is None:
         raise FactoryError("missing dependency: pi", 69)
     if action == "explain":
-        print(model("explain", json.dumps({"name": name, "source": source})))
+        ui.explain(model("explain", json.dumps({"name": name, "source": source})))
         return 0
     prompt = " ".join(values).strip() or entry(
         "What shell tool should Ayi build?" if action == "new" else f"What should change in {name}?"

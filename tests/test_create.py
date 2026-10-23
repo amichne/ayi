@@ -102,8 +102,8 @@ def test_review_verify_commit_register(shell: Shell) -> None:
     )
     result = new_command(shell, "Print a greeting with a name", input_text="y\ny\n")
     assert result.returncode == 0, result.stderr + result.stdout
-    assert result.stdout.index("Print a greeting") < result.stdout.index("Run this verification?")
-    assert "Verification passed" in result.stdout
+    assert result.stderr.index("Print a greeting") < result.stderr.index("Run this verification?")
+    assert "Verification passed" in result.stderr
     assert "Invocation: greet" in result.stdout
     task = shell.root / "tasks/greet"
     assert task.is_file()
@@ -159,7 +159,7 @@ def test_decline_keeps_draft_unregistered(shell: Shell) -> None:
 def test_decline_registration_keeps_verified_task_unregistered(shell: Shell) -> None:
     prepare(shell)
     result = new_command(shell, "Greet", input_text="y\nn\n")
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
 
@@ -170,7 +170,7 @@ def test_commit_failure_removes_unregistered_files(shell: Shell) -> None:
     _ = hook.write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
     result = new_command(shell, "Greet", input_text="y\ny\n")
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
     assert not (shell.root / "verification/greet").exists()

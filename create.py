@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import install
+import ui
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT
@@ -138,10 +139,7 @@ def read_draft(directory: Path) -> Draft | Rejected:
 
 
 def approved(question: str) -> bool:
-    try:
-        return input(f"{question} [y/N] ").strip().lower() == "y"
-    except EOFError:
-        return False
+    return ui.approved(question)
 
 
 def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
@@ -317,7 +315,7 @@ def main(
     drafts = ROOT / "drafts"
     drafts.mkdir(exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="command-", dir=drafts))
-    print(f"Draft: {directory}", flush=True)
+    ui.status(f"Proposed draft: {directory}")
     result = subprocess.run(
         [
             "pi",
@@ -338,6 +336,7 @@ def main(
         ],
         cwd=directory,
         stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
         check=False,
     )
     if result.returncode:
@@ -349,26 +348,30 @@ def main(
     if name is not None and draft.name != name:
         print(f"ayi: draft changed the agreed command name. Draft: {directory}", file=sys.stderr)
         return 65
-    for label, content in (
-        ("Requirements", draft.requirements),
-        ("Task", draft.task),
-        ("Verification", draft.verification),
+    ui.status(f"Generated: {draft.name} (not yet verified or installed)")
+    for label, content, path in (
+        ("Requirements", draft.requirements, command_paths(draft.name)[2]),
+        ("Task", draft.task, command_paths(draft.name)[0]),
+        ("Verification", draft.verification, command_paths(draft.name)[1]),
     ):
-        print(f"\n{label}:\n{content.decode()}")
+        previous = original.files.get(path) if original is not None else None
+        ui.review(label, content, previous[0] if previous else None)
     if not approved("Run this verification?"):
         return 1
+    ui.status("Verifying reviewed draft...")
     verified = verify(draft)
     if isinstance(verified, VerificationFailed):
         print(
             f"ayi: verification failed: exit {verified.status}. Draft: {directory}", file=sys.stderr
         )
         return verified.status
-    print("Verification passed.")
+    ui.status("Verification passed.")
     destination = install.command_link(draft.name).destination
     if not approved(
         f"Commit and register {draft.name} in {REPO}, and {'replace' if force else 'install'} {destination}?"
     ):
         return 1
+    ui.status("Registering verified draft...")
     status = register(verified, original, force=force)
     if status == 0:
         print(f"Installed: {destination}\nInvocation: {draft.name} [args]")

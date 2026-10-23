@@ -178,7 +178,7 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         "modify", "greet", "Use hello", input_text="Use hello, preserve spaces\ny\ny\n"
     )
     assert result.returncode != 0
-    assert "Verification passed" in result.stdout
+    assert "Verification passed" in result.stderr
     for path, expected in originals.items():
         assert (path.read_bytes(), path.stat().st_mode) == expected
     assert (shell.root / "verification/greet").exists() == has_supporting_files

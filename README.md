@@ -15,7 +15,7 @@ ayi                          # enter a new request interactively
 ## Install
 
 Install mise, uv 0.12.9 or later, curl, Pi, Git, and ShellCheck through your approved package provider.
-Install fzf 0.60 or later for interactive fuzzy menus; without it, Ayi uses numbered text choices.
+Inline input and presentation use locked prompt_toolkit and Rich dependencies; fzf is not required.
 Authenticate Pi through its existing commands.
 The Python project uses Python 3.12 and locked dependencies. Shell startup does not install dependencies.
 
@@ -112,12 +112,17 @@ Each question and its choices come from Pi, using the request and
 all previous answers, rather than a fixed questionnaire. `modify` supplies the existing
 source and requirements and asks only about unresolved changes; the name stays fixed.
 
-Type to filter the fzf choices, use arrow keys and Enter to select, or choose
+Type to filter the inline choices, use arrow keys or Tab and Enter to select, or choose
 **Write a different answer** for free text. Esc or Ctrl-C cancels without registration.
-Menus wrap at narrow widths and honor `NO_COLOR`. If fzf is absent or input/output is
-redirected, numbered choices accept a number or a custom answer. EOF or an empty answer cancels.
+Candidates and context stay above the final input row, without an alternate screen.
+Completed steps remain in scrollback. Menus wrap at narrow widths. With `NO_COLOR`,
+`TERM=dumb`, CI, or redirected input, plain numbered choices accept a number or a custom answer.
+EOF or an empty answer cancels.
 Run `ayi`, `ayi new [name]`, or `ayi modify <name>` without a prompt to enter text with ordinary
-readline cursor editing. No multiline editor or persistent prompt history is provided.
+cursor editing. No multiline editor or persistent prompt history is provided.
+Review shows proposed source or a diff against installed source, then requests explicit
+verification and registration approvals. Diagnostics and progress go to stderr; command results
+stay on stdout. Animations run only while work is pending on an interactive terminal.
 
 Pi uses its existing authentication and model settings. Interview and explanation calls
 have tools disabled. After the interview, Pi writes a draft and exits automatically;

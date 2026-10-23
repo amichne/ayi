@@ -52,6 +52,7 @@ def shell(tmp_path: Path) -> Shell:
         "pyproject.toml",
         "uv.lock",
         ".python-version",
+        "ui.py",
     ):
         source = SOURCE / name
         if source.exists():
