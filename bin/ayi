@@ -25,7 +25,7 @@ case "${1:-new}" in
         exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/factory.py" "$@" ;;
     list)
         [ "$#" -eq 1 ] || { printf 'ayi: usage: ayi list\n' >&2; exit 64; }
-        exec mise -C "$ayi_root" tasks ls --local ;;
+        exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/factory.py" list ;;
     install)
         shift
         exec uv run --locked --no-dev --project "$ayi_root" python "$ayi_root/install.py" "$@" ;;

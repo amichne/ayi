@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 import create
 import install
 import ui
+from completion import commands, read_interface
 
 type Line = Annotated[
     str, StringConstraints(min_length=1, max_length=600, pattern=r"^[^\x00-\x1f\x7f]+$")
@@ -190,6 +192,29 @@ def interview(
 
 def main(arguments: list[str]) -> int:
     action = arguments[0] if arguments else "new"
+    if action == "list":
+        if arguments != ["list"]:
+            raise FactoryError("usage: ayi list", 64)
+        rows: list[tuple[str, str, str]] = []
+        for command in commands():
+            interface = read_interface(command)
+            if interface is not None:
+                summary = interface.summary
+                invocation = interface.examples[0] if interface.examples else command + " --help"
+            else:
+                source_text = (create.ROOT / "tasks" / command).read_text()
+                metadata = tomllib.loads(
+                    "\n".join(
+                        line.removeprefix("#MISE ")
+                        for line in source_text.splitlines()
+                        if line.startswith("#MISE ")
+                    )
+                )
+                summary = str(metadata.get("description", "Legacy command (no interface)"))
+                invocation = command + " --help"
+            rows.append((command, summary, invocation))
+        ui.command_list(rows)
+        return 0
     values: list[str] = []
     force = False
     literal = False
@@ -267,6 +292,9 @@ if __name__ == "__main__":
     except FactoryError as error:
         print(f"ayi: {error}", file=sys.stderr)
         raise SystemExit(error.status) from error
+    except (ValueError, UnicodeError) as error:
+        print(f"ayi: invalid command metadata: {error}", file=sys.stderr)
+        raise SystemExit(65) from error
     except OSError as error:
         print(f"ayi: local operation failed: {error.strerror}", file=sys.stderr)
         raise SystemExit(74) from error

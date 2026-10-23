@@ -65,6 +65,8 @@ def values(completion: Completion, prefix: str, cwd: str) -> list[Candidate]:
                 Candidate(value=value) for value in completion.values if value.startswith(prefix)
             ]
         case "file" | "directory":
+            if prefix == "~":
+                return [Candidate(value="~/", kind="directory")]
             expanded = Path(os.path.expanduser(prefix))
             base = expanded if prefix.endswith("/") else expanded.parent
             partial = "" if prefix.endswith("/") else expanded.name if prefix else ""
@@ -109,7 +111,15 @@ def resolve(request: Request) -> list[Candidate]:
                 for name in ("new", "modify", "explain", "list", "install", "shell", "--help")
                 if name.startswith(prefix)
             ]
-        if len(before) == 1 and before[0] in ("modify", "explain"):
+        if before[0] in ("new", "modify") and "--" not in before and prefix.startswith("-"):
+            return (
+                [Candidate(value="--force")]
+                if "--force".startswith(prefix) and "--force" not in before
+                else []
+            )
+        if before[0] in ("modify", "explain") and not [
+            word for word in before[1:] if word != "--force"
+        ]:
             return [Candidate(value=name) for name in commands() if name.startswith(prefix)]
         choices = {"install": ("plan", "apply", "uninstall"), "shell": ("init",)}
         if len(before) == 1:
@@ -120,8 +130,6 @@ def resolve(request: Request) -> list[Candidate]:
             ]
         if before == ["shell", "init"] and "zsh".startswith(prefix):
             return [Candidate(value="zsh")]
-        if before[0] in ("new", "modify") and prefix.startswith("-"):
-            return [Candidate(value="--force")] if "--force".startswith(prefix) else []
         return []
     interface = read_interface(request.command)
     if interface is None:

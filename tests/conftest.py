@@ -56,6 +56,9 @@ def shell(tmp_path: Path) -> Shell:
         "interface.py",
         "completion.py",
         "shell.py",
+        "factory.py",
+        "create.py",
+        "install.py",
     ):
         source = SOURCE / name
         if source.exists():

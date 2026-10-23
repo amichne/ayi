@@ -142,6 +142,7 @@ are shell-quoted. Completion never invokes Pi or runs a tool. It uses the alread
 locked runtime without uv synchronization or bytecode writes; for a source checkout, first run
 `ayi install plan` (or `uv sync --locked`). Bash, Fish, and custom dynamic providers are not
 supported yet; unknown provider kinds are rejected rather than executed.
+uv precompiles dependency bytecode during explicit runtime initialization, not while completing.
 
 `interface/<name>.json` uses schema version 1 and declares `name`, `summary`, `positionals`,
 `options`, optional invocation `examples`, and output capabilities (`text`, `json`, `jsonl`,
@@ -167,12 +168,18 @@ have tools disabled. After the interview, Pi writes a draft and exits automatica
 there is no Pi session to quit. Draft generation enables only read/write/edit file tools,
 not command execution. These tools are not a filesystem sandbox.
 
-The caller prints the requirements, task source, and verification source.
-Examine all three before you approve verification.
+Every new or modified draft must contain a valid `interface.json`; legacy commands are
+upgraded only when modified. The caller presents requirements, task, verification, and
+interface source (or diffs). Examine all four before you approve verification.
 The verification receives a disposable `HOME` and XDG directories without inherited credentials.
+Its first argument is the absolute task path and its second is the reviewed interface path.
+The generation prompt requires tests of every declared option/alias and choice, invalid inputs,
+output modes, and examples using disposable fixtures. These behavior-specific assertions are
+generated code: review them; schema validation alone cannot prove a separately implemented parser.
 Bash tasks also pass Bash syntax and ShellCheck checks.
-Changed verification inputs cause rejection. Ayi also runs `--help` and requires nonempty
-stdout and a successful exit before allowing registration.
+Changed task, verifier, or manifest inputs cause rejection. Independently of generated assertions,
+Ayi checks `--help` and `-h` for nonempty stdout, success, and every declared option spelling,
+and requires a nonzero exit for an unknown option before allowing registration.
 
 After verification passes, the caller requests approval to commit, register, and install
 the command at `~/.local/bin/<name>`.
@@ -182,12 +189,13 @@ The local commit uses the Ayi checkout and contains only the command's files:
 tasks/<name>
 verification/<name>
 requirements/<name>.md
+interface/<name>.json
 ```
 
 Unrelated staged files stay staged. By default, `new` cannot overwrite existing commands;
 deleted paths in the Git index or current commit also prevent new registration.
-`modify` requires the command's files to be clean and tracked (missing requirements or
-verification files may be added). It rechecks the original bytes, permissions, and Git
+`modify` requires the command's files to be clean and tracked (missing requirements,
+verification, or interface files may be added). It rechecks the original bytes, permissions, and Git
 status before replacement. A changed command causes rejection.
 
 `--force` on `new` allows rebuilding a clean registered tool. On `new` or `modify`, it also
@@ -198,11 +206,13 @@ A failed commit restores the original registry files and displaced executable/li
 A successful replacement discards the displaced executable/link.
 Use `--` before prompt text when it contains a standalone `--force` that should be literal.
 
-Mise lists the task file in later sessions; the installed command is immediately callable
+`ayi list` shows descriptions and invocation examples from manifests, falling back to legacy
+mise descriptions. It does not execute tools or invoke Pi. Mise still owns task discovery;
+the installed command is immediately callable
 when `~/.local/bin` is on PATH.
 No push occurs. Normal Git hooks and local Git identity still govern the commit.
 
-`explain` sends source and any saved requirements and verification to Pi, and prints
+`explain` sends source and any saved requirements, interface, and verification to Pi, and prints
 usage, dependencies, effects, and limitations without running the command. It explains
 Ayi registry commands, not arbitrary executables from PATH. Explanation is model analysis,
 not a claim that the tool has been tested.

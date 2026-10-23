@@ -14,7 +14,7 @@ type OptionName = Annotated[str, StringConstraints(pattern=r"^(?:--[a-z][a-z0-9-
 
 
 class Closed(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", strict=True, defer_build=True)
 
 
 class NoCompletion(Closed):

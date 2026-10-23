@@ -23,6 +23,8 @@ from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
 
 STYLE = Style.from_dict({"accent": "ansicyan", "muted": "ansibrightblack"})
 
@@ -30,6 +32,7 @@ STYLE = Style.from_dict({"accent": "ansicyan", "muted": "ansibrightblack"})
 def interactive() -> bool:
     return (
         sys.stdin.isatty()
+        and sys.stdout.isatty()
         and sys.stderr.isatty()
         and os.environ.get("TERM") != "dumb"
         and "NO_COLOR" not in os.environ
@@ -92,7 +95,14 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
                     f"  {'>' if focused else ' '} {candidates[index]}\n",
                 )
             )
-        rows.append(("class:muted", "  up/down navigate | enter accept | esc cancel"))
+        help_text = "  enter submit | esc cancel"
+        if options:
+            help_text = (
+                "  arrows/tab | enter | esc"
+                if app.output.get_size().columns < 45
+                else "  up/down navigate | enter accept | esc cancel"
+            )
+        rows.append(("class:muted", help_text))
         return rows
 
     bindings = KeyBindings()
@@ -200,3 +210,22 @@ def explain(text: str) -> None:
         output.print(Markdown(text))
     else:
         output.print(text, markup=False, highlight=False, soft_wrap=True)
+
+
+def command_list(rows: Sequence[tuple[str, str, str]]) -> None:
+    output = Console(force_terminal=interactive(), no_color=not interactive())
+    if not rows:
+        output.print(
+            'No Ayi commands registered. Create one with: ayi new <name> "<request>"', markup=False
+        )
+    elif interactive():
+        table = Table(box=None, padding=(0, 2))
+        table.add_column("Command", style="cyan", overflow="fold")
+        table.add_column("Description", overflow="fold")
+        table.add_column("Example", overflow="fold")
+        for name, summary, invocation in rows:
+            table.add_row(Text(name), Text(summary), Text(invocation))
+        output.print(table)
+    else:
+        for row in rows:
+            print("\t".join(row))

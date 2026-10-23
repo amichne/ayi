@@ -40,7 +40,7 @@ class Draft:
     task: bytes
     verification: bytes
     requirements: bytes
-    interface: bytes | None = None
+    interface: bytes
 
 
 @dataclass(frozen=True)
@@ -139,10 +139,10 @@ def read_draft(directory: Path) -> Draft | Rejected:
         ):
             return Rejected(Rejection.INVALID)
         interface_path = directory / "interface.json"
-        if interface_path.is_symlink():
+        if interface_path.is_symlink() or not interface_path.is_file():
             return Rejected(Rejection.INVALID)
-        interface = interface_path.read_bytes() if interface_path.exists() else None
-        if interface is not None and Interface.model_validate_json(interface).name != name:
+        interface = interface_path.read_bytes()
+        if Interface.model_validate_json(interface).name != name:
             return Rejected(Rejection.INVALID)
         return Draft(name, task, verification, requirements, interface)
     except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValidationError):
@@ -158,8 +158,14 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
         directory = Path(temporary)
         task = directory / "task"
         verification = directory / "verify"
-        _ = task.write_bytes(draft.task)
-        _ = verification.write_bytes(draft.verification)
+        interface_path = directory / "interface.json"
+        inputs = {
+            task: draft.task,
+            verification: draft.verification,
+            interface_path: draft.interface,
+        }
+        for path, content in inputs.items():
+            _ = path.write_bytes(content)
         task.chmod(0o755)
         verification.chmod(0o755)
         home = directory / "home"
@@ -177,28 +183,66 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
         }
         if b"bash" in draft.task.splitlines()[0]:
             for args in (["bash", "-n", str(task)], ["shellcheck", "-S", "warning", str(task)]):
-                result = subprocess.run(args, cwd=directory, env=env, check=False)
+                result = subprocess.run(
+                    args, cwd=directory, env=env, stdout=sys.stderr, check=False
+                )
                 if result.returncode:
                     return VerificationFailed(result.returncode)
-        result = subprocess.run([str(verification), str(task)], cwd=directory, env=env, check=False)
-        if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
+        result = subprocess.run(
+            [str(verification), str(task), str(interface_path)],
+            cwd=directory,
+            env=env,
+            stdout=sys.stderr,
+            check=False,
+        )
+        if any(
+            not path.is_file() or path.is_symlink() or path.read_bytes() != content
+            for path, content in inputs.items()
+        ):
             print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
             return VerificationFailed(65)
         if result.returncode:
             return VerificationFailed(result.returncode)
-        help_result = subprocess.run(
-            [str(task), "--help"],
-            cwd=directory,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if task.read_bytes() != draft.task or verification.read_bytes() != draft.verification:
-            print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
-            return VerificationFailed(65)
-        if help_result.returncode or not help_result.stdout.strip():
-            print("ayi: tool must provide nonempty --help output and exit 0", file=sys.stderr)
-            return VerificationFailed(65)
+        interface = Interface.model_validate_json(draft.interface)
+        invalid = "--ayi-invalid-option"
+        declared = {name for option in interface.options for name in option.names}
+        while invalid in declared:
+            invalid += "-x"
+        for flag in ("--help", "-h", invalid):
+            result = subprocess.run(
+                [str(task), flag], cwd=directory, env=env, capture_output=True, check=False
+            )
+            if any(
+                not path.is_file() or path.is_symlink() or path.read_bytes() != content
+                for path, content in inputs.items()
+            ):
+                print(f"ayi: {Rejection.CHANGED}", file=sys.stderr)
+                return VerificationFailed(65)
+            if flag == invalid:
+                if result.returncode == 0:
+                    print(
+                        "ayi: tool must reject unknown options with a nonzero exit", file=sys.stderr
+                    )
+                    return VerificationFailed(65)
+            else:
+                if result.returncode or not result.stdout.strip():
+                    print(
+                        f"ayi: tool must provide nonempty {flag} output and exit 0", file=sys.stderr
+                    )
+                    return VerificationFailed(65)
+                help_text = result.stdout.decode(errors="replace")
+                missing = [
+                    name
+                    for option in interface.options
+                    for name in option.names
+                    if not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", help_text)
+                ]
+                if missing:
+                    print(
+                        f"ayi: declared options missing from {flag}: {', '.join(missing)}",
+                        file=sys.stderr,
+                    )
+                    return VerificationFailed(65)
         return _VerifiedDraft(draft)
 
 
@@ -219,15 +263,13 @@ def register(
             file=sys.stderr,
         )
         return 65
-    files = {
-        path: content
-        for path, content in zip(
+    files = dict(
+        zip(
             command_paths(draft.name),
             (draft.task, draft.verification, draft.requirements, draft.interface),
             strict=True,
         )
-        if content is not None
-    }
+    )
     if original is not None and (
         draft.name != original.name or read_original(original.name) != original
     ):
@@ -268,7 +310,7 @@ def register(
                 _ = link.destination.rename(backup)
             link.destination.symlink_to(link.source)
             linked = True
-        added = subprocess.run(git_arguments("add", "--", *paths), check=False)
+        added = subprocess.run(git_arguments("add", "--", *paths), stdout=sys.stderr, check=False)
         if added.returncode:
             return added.returncode
         result = subprocess.run(
@@ -280,6 +322,7 @@ def register(
                 "--",
                 *paths,
             ),
+            stdout=sys.stderr,
             check=False,
         )
         committed = result.returncode == 0
@@ -368,8 +411,6 @@ def main(
         ("Verification", draft.verification, command_paths(draft.name)[1]),
         ("Interface", draft.interface, command_paths(draft.name)[3]),
     ):
-        if content is None:
-            continue
         previous = original.files.get(path) if original is not None else None
         ui.review(label, content, previous[0] if previous else None)
     if not approved("Run this verification?"):

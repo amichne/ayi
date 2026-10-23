@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import pty
+import select
+import struct
 import subprocess
+import termios
+import time
 from pathlib import Path
 
 import pytest
@@ -67,6 +74,7 @@ def prepare(shell: Shell) -> None:
         (["-s", "name", "--s"], []),
         (["--limit", ""], []),
         (["fo"], ["folder space/"]),
+        (["~"], ["~/"]),
         (["--", "fo"], ["folder space/"]),
         (["--sort", "size", "--", "folder space", "fi"], ["file.txt"]),
         (["second", "file.txt", "fo"], ["folder space/"]),
@@ -84,6 +92,94 @@ def test_contextual_completion_is_read_only(
     assert [row["value"] for row in json.loads(result.stdout)] == expected
     assert "\x1b" not in result.stdout
     assert not (Path(shell.env["HOME"]) / "unexpected-execution").exists()
+
+
+def test_native_zsh_tab_preserves_values_and_quotes_paths(shell: Shell) -> None:
+    prepare(shell)
+    assert shell.run("install", "apply").returncode == 0
+    home = Path(shell.env["HOME"])
+    master, slave = pty.openpty()
+    _ = fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+    env = dict(shell.env, TERM="xterm-256color", PATH=f"{home}/.local/bin:{shell.env['PATH']}")
+    process = subprocess.Popen(
+        ["/bin/zsh", "-dfi"], stdin=slave, stdout=slave, stderr=slave, env=env, cwd=shell.cwd
+    )
+    os.close(slave)
+    transcript = bytearray()
+
+    def wait_file(path: Path) -> None:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                transcript.extend(os.read(master, 65536))
+            if path.exists():
+                return
+        pytest.fail(transcript.decode(errors="replace"))
+
+    try:
+        _ = os.write(
+            master,
+            b'bindkey -e; autoload -Uz compinit; compinit -D -i; eval "$(ayi shell init zsh)"\n',
+        )
+        _ = os.write(
+            master,
+            b'capture-buffer() { print -r -- "$BUFFER" > "$HOME/buffer"; zle .send-break; }; zle -N capture-buffer; bindkey "^X" capture-buffer; print ready > "$HOME/ready"\n',
+        )
+        wait_file(home / "ready")
+        for typed, expected in (
+            ("one --sort si\t", "one --sort size "),
+            ("one --sort=si\t", "one --sort=size "),
+            ("one fo\t", "one folder\\ space/"),
+            ("ayi mod\t", "ayi modify "),
+        ):
+            buffer = home / "buffer"
+            buffer.unlink(missing_ok=True)
+            _ = os.write(master, (typed + "\x18").encode())
+            wait_file(buffer)
+            assert buffer.read_text().rstrip("\n") == expected, transcript.decode(errors="replace")
+        registration = f'cp "{shell.root}/tasks/one" "{shell.root}/tasks/late-tool"; ln -s "{shell.root}/bin/ayi-tool" "$HOME/.local/bin/late-tool"\n'
+        _ = os.write(master, registration.encode())
+        _ = os.write(master, b'print -r -- "$_comps[late-tool]" > "$HOME/registered"\n')
+        wait_file(home / "registered")
+        assert (home / "registered").read_text().strip() == "_ayi"
+        assert not (home / "unexpected-execution").exists()
+    finally:
+        _ = os.write(master, b"exit\n")
+        try:
+            _ = process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _ = process.wait(timeout=2)
+        os.close(master)
+
+
+def test_discovery_uses_manifest_and_preserves_legacy_tools(shell: Shell) -> None:
+    prepare(shell)
+    result = shell.run("list")
+    assert result.returncode == 0, result.stderr
+    assert "one\tInspect files\tone --help" in result.stdout
+    assert "two\tFixture two\ttwo --help" in result.stdout
+    assert not (Path(shell.env["HOME"]) / "unexpected-execution").exists()
+
+
+def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
+    prepare(shell)
+    for args, expected in (
+        (["new", "--f"], ["--force"]),
+        (["modify", "--f"], ["--force"]),
+        (["modify", "--force", "t"], ["two"]),
+        (["explain", "o"], ["one"]),
+        (["install", "a"], ["apply"]),
+        (["shell", "init", "z"], ["zsh"]),
+    ):
+        result = shell.run(
+            "complete",
+            input_text=json.dumps(
+                {"command": "ayi", "args": args, "cursor": len(args) - 1, "cwd": str(shell.cwd)}
+            ),
+        )
+        assert result.returncode == 0, result.stderr
+        assert [row["value"] for row in json.loads(result.stdout)] == expected
 
 
 @pytest.mark.parametrize(
