@@ -26,10 +26,21 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-STYLE = Style.from_dict({"accent": "ansicyan", "muted": "ansibrightblack"})
+STYLE = Style.from_dict(
+    {
+        "accent": "ansicyan bold",
+        "muted": "ansibrightblack",
+        "selected": "bg:ansicyan ansiblack bold",
+        "title": "bold",
+    }
+)
 
 
 def interactive() -> bool:
+    try:
+        _ = "┌─│└❯◆↑↓↵".encode(sys.stderr.encoding or "ascii")
+    except UnicodeError:
+        return False
     return (
         sys.stdin.isatty()
         and sys.stdout.isatty()
@@ -45,14 +56,16 @@ def console() -> Console:
 
 
 def status(message: str) -> None:
-    console().print(message, style="cyan", markup=False, highlight=False)
+    console().print(
+        f"  ◆  {message}" if interactive() else message, style="cyan", markup=False, highlight=False
+    )
 
 
 @contextmanager
 def activity(message: str) -> Iterator[None]:
     output = console()
     if interactive():
-        with output.status(message, spinner="line"):
+        with output.status(f"  {message}", spinner="dots"):
             yield
     else:
         status(message)
@@ -76,33 +89,46 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
         return answer
 
     selected: int | None = None
-    field = TextArea(height=1, prompt="ayi > ", multiline=False, wrap_lines=False)
+    field = TextArea(
+        height=1, prompt=[("class:accent", "  ayi ❯ ")], multiline=False, wrap_lines=False
+    )
 
     def matches() -> list[str]:
         return [option for option in options if field.text.casefold() in option.casefold()]
 
     def context() -> list[tuple[str, str]]:
         candidates = matches()
-        rows: list[tuple[str, str]] = [("class:accent", f"  ayi / {label}\n")]
+        heading, _, question = label.partition("\n")
+        rows: list[tuple[str, str]] = [
+            ("class:accent", "  ┌─ "),
+            ("class:title", f"ayi / {heading}\n"),
+        ]
+        if question:
+            for line in Text(question).wrap(console(), max(1, app.output.get_size().columns - 5)):
+                rows.extend([("class:muted", "  │  "), ("", f"{line.plain}\n")])
         # Reserve the final row for input, even in small terminals.
         count = max(0, min(6, app.output.get_size().rows - 4))
         start = max(0, (selected or 0) - count + 1)
         for index in range(start, min(len(candidates), start + count)):
             focused = index == selected
-            rows.append(
-                (
-                    "class:accent" if focused else "",
-                    f"  {'>' if focused else ' '} {candidates[index]}\n",
-                )
+            rows.extend(
+                [
+                    ("class:accent" if focused else "class:muted", "  │  "),
+                    (
+                        "class:selected" if focused else "",
+                        f" {'❯' if focused else ' '} {candidates[index]} ",
+                    ),
+                    ("", "\n"),
+                ]
             )
-        help_text = "  enter submit | esc cancel"
+        help_text = "↵ submit · esc cancel"
         if options:
             help_text = (
-                "  arrows/tab | enter | esc"
+                "↑↓ tab · ↵ · esc"
                 if app.output.get_size().columns < 45
-                else "  up/down navigate | enter accept | esc cancel"
+                else "↑↓ navigate · tab next · ↵ accept · esc cancel"
             )
-        rows.append(("class:muted", help_text))
+        rows.extend([("class:muted", "  └─ "), ("class:muted", help_text)])
         return rows
 
     bindings = KeyBindings()
@@ -177,7 +203,15 @@ def approved(question: str) -> bool:
 
 def review(label: str, content: bytes, previous: bytes | None = None) -> None:
     output = console()
-    output.print(f"\n{label}:", style="bold", markup=False)
+    if interactive():
+        output.rule(
+            Text(f"◆ {label}", style="bold cyan"),
+            align="left",
+            style="bright_black",
+            characters="─",
+        )
+    else:
+        output.print(f"\n{label}:", style="bold", markup=False)
     source = content.decode()
     if previous is not None:
         source = (
@@ -199,7 +233,7 @@ def review(label: str, content: bytes, previous: bytes | None = None) -> None:
                 "bash" if source.startswith("#!") and "bash" in source.splitlines()[0] else "text"
             )
         )
-        output.print(Syntax(source, language, word_wrap=True))
+        output.print(Syntax(source, language, word_wrap=True, background_color="default"))
     else:
         output.print(source, markup=False, highlight=False, soft_wrap=True)
 

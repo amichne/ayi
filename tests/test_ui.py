@@ -48,7 +48,7 @@ def test_inline_terminal_selection_resize_and_cancel(
                 output += chunk
                 if b"\x1b[6n" in chunk:
                     _ = os.write(master, b"\x1b[1;1R")
-                if b"ayi >" in output and b"model update" in output and not sent:
+                if b"esc" in output and b"model update" in output and not sent:
                     _ = fcntl.ioctl(
                         master, termios.TIOCSWINSZ, struct.pack("HHHH", 16, width, 0, 0)
                     )
@@ -68,7 +68,9 @@ def test_inline_terminal_selection_resize_and_cancel(
         os.close(master)
 
 
-@pytest.mark.parametrize("mode", [{"NO_COLOR": "1"}, {"TERM": "dumb"}, {"CI": "true"}, {}])
+@pytest.mark.parametrize(
+    "mode", [{"NO_COLOR": "1"}, {"TERM": "dumb"}, {"CI": "true"}, {"PYTHONIOENCODING": "ascii"}, {}]
+)
 def test_plain_input_has_no_terminal_controls(mode: dict[str, str], tmp_path: Path) -> None:
     master, slave = pty.openpty()
     # Each capability is tested with TTY input/error, not already-degraded pipes.

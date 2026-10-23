@@ -43,6 +43,8 @@ extend-exclude = ["**/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S", "RUF"]
+# The terminal selection marker is intentionally distinct from ASCII >.
+allowed-confusables = ["❯"]
 # Documentation style is prose policy; formatter owns line layout. CLI output
 # and explicit argv subprocesses are intentional at effect boundaries.
 ignore = ["E501", "S603", "S607"]
