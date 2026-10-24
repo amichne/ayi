@@ -118,8 +118,11 @@ def resolve(request: Request) -> list[Candidate]:
                     "review",
                     "list",
                     "install",
+                    "update",
                     "shell",
                     "--help",
+                    "--version",
+                    "-V",
                 )
                 if name.startswith(prefix)
             ]

@@ -132,13 +132,13 @@ def test_invalid_commit_response_names_the_stage_without_response_content(
     assert not locations(shell.env).parent.exists()
 
 
-def source_archive(shell: Shell, bad: str = "") -> bytes:
+def source_archive(shell: Shell, bad: str = "", sha: str = SHA) -> bytes:
     copy_runtime(shell, "install.py", "create.py", ".gitignore")
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:gz") as archive:
         for file in shell.root.rglob("*"):
             if file.is_file():
-                archive.add(file, arcname=f"ayi-{SHA}/{file.relative_to(shell.root)}")
+                archive.add(file, arcname=f"ayi-{sha}/{file.relative_to(shell.root)}")
         if bad:
             item = tarfile.TarInfo(bad)
             archive.addfile(item)

@@ -44,6 +44,32 @@ Reruns reuse an owned registry and preserve generated commands and commits.
 They restore missing links without a source upgrade.
 The installer keeps authentication and shell startup outside its scope.
 
+### Update and version
+
+```sh
+ayi --version
+ayi -V
+ayi update
+```
+
+Both version flags print the version from `pyproject.toml`.
+Archive installations also show the source commit.
+Version output uses the installed Python runtime without a network request or dependency sync.
+
+`ayi update` downloads the latest `main` commit for an archive installation.
+It preserves generated tools and local Git history.
+Dirty registries and local changes that conflict with new source cause rejection before replacement.
+The command records source changes in a local commit, then refreshes dependencies, links, and mise trust.
+The source commit uses the installer identity with hooks and signing disabled.
+If setup fails after that commit, the command reports the failure. Run `ayi update` again to finish setup.
+Developer checkouts use Git for source updates.
+
+For an older archive installation without `ayi update`, use the current bootstrap:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/amichne/ayi/main/install.sh | sh -s -- update
+```
+
 For a developer checkout, clone the repository into its own directory:
 
 ```sh

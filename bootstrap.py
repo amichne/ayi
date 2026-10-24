@@ -19,13 +19,16 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import TypeGuard
 
@@ -61,6 +64,23 @@ class DownloadFailed:
     reason: str
 
 
+class _Absent(Enum):
+    FILE = "absent"
+
+
+@dataclass(frozen=True)
+class _File:
+    content: bytes
+    executable: bool
+
+
+@dataclass(frozen=True)
+class _Change:
+    relative: Path
+    before: _File | _Absent
+    after: _File | _Absent
+
+
 def mapping(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict)
 
@@ -71,6 +91,45 @@ def revision(value: object) -> _Revision:
         if isinstance(sha, str) and re.fullmatch(r"[a-f0-9]{40}", sha):
             return _Revision(sha)
     raise InstallError(69, "GitHub did not supply a source commit")
+
+
+def latest(fetch: Callable[[str], bytes | DownloadFailed]) -> _Revision:
+    metadata = source(API, fetch)
+    try:
+        return revision(json.loads(metadata))
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise InstallError(69, f"source commit response is invalid: {API}") from error
+
+
+def owned_revision(root: Path) -> _Revision:
+    marker = root / MARKER
+    if (
+        root.is_symlink()
+        or marker.is_symlink()
+        or not marker.is_file()
+        or (root / ".git").is_symlink()
+        or not (root / ".git").is_dir()
+        or re.fullmatch(rb"[a-f0-9]{40}\n", marker.read_bytes()) is None
+    ):
+        raise InstallError(
+            65, f"existing source stays unchanged: {root}. Update developer checkouts with Git."
+        )
+    return _Revision(marker.read_text().strip())
+
+
+def git_environment(env: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in env.items()
+        if not key.startswith("GIT_")
+        or key in {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"}
+    } | {"GIT_OPTIONAL_LOCKS": "0"}
+
+
+def dependencies(env: Mapping[str, str]) -> None:
+    for tool in ("uv", "git", "mise", CURL):
+        if shutil.which(tool, path=env.get("PATH", "")) is None:
+            raise InstallError(69, f"missing dependency: {tool}")
 
 
 def locations(env: Mapping[str, str]) -> _Locations:
@@ -152,6 +211,7 @@ def unpack(content: bytes, selected: _Revision, root: Path) -> None:
                 or name.parts[0] != f"ayi-{selected.sha}"
                 or ".." in name.parts
                 or ".git" in name.parts
+                or (len(name.parts) > 1 and name.parts[1] in {MARKER, ".venv"})
                 or not (member.isfile() or member.isdir())
             ):
                 raise InstallError(65, "source archive contains an invalid entry")
@@ -202,26 +262,12 @@ def install(
     env: Mapping[str, str],
     fetch: Callable[[str], bytes | DownloadFailed] = download,
 ) -> None:
-    for tool in ("uv", "git", "mise", CURL):
-        if shutil.which(tool, path=env.get("PATH", "")) is None:
-            raise InstallError(69, f"missing dependency: {tool}")
+    dependencies(env)
     if target.root.exists() or target.root.is_symlink():
-        marker = target.root / MARKER
-        if (
-            target.root.is_symlink()
-            or marker.is_symlink()
-            or not marker.is_file()
-            or not (target.root / ".git").is_dir()
-            or re.fullmatch(rb"[a-f0-9]{40}\n", marker.read_bytes()) is None
-        ):
-            raise InstallError(65, f"existing source stays unchanged: {target.root}")
+        _ = owned_revision(target.root)
         apply(target, env)
         return
-    metadata = source(API, fetch)
-    try:
-        selected = revision(json.loads(metadata))
-    except (json.JSONDecodeError, UnicodeError) as error:
-        raise InstallError(69, f"source commit response is invalid: {API}") from error
+    selected = latest(fetch)
     content = source(f"https://github.com/amichne/ayi/archive/{selected.sha}.tar.gz", fetch)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.root.mkdir()
@@ -229,12 +275,7 @@ def install(
         _ = rollback.callback(shutil.rmtree, target.root)
         unpack(content, selected, target.root)
         _ = (target.root / MARKER).write_text(selected.sha + "\n")
-        git_env = {
-            key: value
-            for key, value in env.items()
-            if not key.startswith("GIT_")
-            or key in {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"}
-        }
+        git_env = git_environment(env)
         run(["git", "init", "-q", str(target.root)], target, git_env)
         run(["git", "-C", str(target.root), "add", "--", "."], target, git_env)
         run(
@@ -261,6 +302,151 @@ def install(
         _ = rollback.pop_all()
 
 
+def git(root: Path, env: Mapping[str, str], *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments], env=env, capture_output=True, text=True, check=False
+    )
+    if result.returncode:
+        raise InstallError(result.returncode, f"update Git step failed: {arguments[0]}")
+    return result.stdout.strip()
+
+
+def clean_head(root: Path, env: Mapping[str, str]) -> str:
+    if Path(git(root, env, "rev-parse", "--show-toplevel")).resolve() != root.resolve():
+        raise InstallError(65, "registry root differs; source stays unchanged")
+    if git(root, env, "status", "--porcelain", "--untracked-files=all"):
+        raise InstallError(
+            65,
+            "registry has local changes; source stays unchanged. Commit or move them before ayi update.",
+        )
+    return git(root, env, "rev-parse", "HEAD")
+
+
+def file_state(root: Path, relative: Path) -> _File | _Absent:
+    path = root / relative
+    if path.is_symlink() or any(
+        (root / parent).is_symlink() or ((root / parent).exists() and not (root / parent).is_dir())
+        for parent in relative.parents
+    ):
+        raise InstallError(65, f"source path conflicts; source stays unchanged: {relative}")
+    if not path.exists():
+        return _Absent.FILE
+    if not path.is_file():
+        raise InstallError(65, f"source path conflicts; source stays unchanged: {relative}")
+    return _File(path.read_bytes(), bool(path.stat().st_mode & stat.S_IXUSR))
+
+
+def changes(old: Path, new: Path, root: Path) -> tuple[_Change, ...]:
+    paths = {
+        file.relative_to(tree) for tree in (old, new) for file in tree.rglob("*") if file.is_file()
+    }
+    result: list[_Change] = []
+    for relative in sorted(paths):
+        before, after = file_state(old, relative), file_state(new, relative)
+        if before != after:
+            if file_state(root, relative) != before:
+                raise InstallError(
+                    65, f"local source conflicts; source stays unchanged: {relative}"
+                )
+            result.append(_Change(relative, before, after))
+    return tuple(result)
+
+
+def write_state(root: Path, relative: Path, state: _File | _Absent) -> None:
+    path = root / relative
+    match state:
+        case _Absent.FILE:
+            path.unlink(missing_ok=True)
+        case _File(content, executable):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _ = path.write_bytes(content)
+            path.chmod(0o755 if executable else 0o644)
+
+
+def update(
+    root: Path, env: Mapping[str, str], fetch: Callable[[str], bytes | DownloadFailed]
+) -> None:
+    current = owned_revision(root)
+    dependencies(env)
+    git_env = git_environment(env)
+    head = clean_head(root, git_env)
+    selected = latest(fetch)
+    target = _Locations(root, root.parent)
+    if selected == current:
+        apply(target, git_env)
+        print(f"Ayi is up to date ({current.sha[:12]}).")
+        return
+    with tempfile.TemporaryDirectory(prefix="ayi-update-") as temporary:
+        old, new = Path(temporary) / "old", Path(temporary) / "new"
+        for revision_, tree in ((current, old), (selected, new)):
+            content = source(
+                f"https://github.com/amichne/ayi/archive/{revision_.sha}.tar.gz", fetch
+            )
+            unpack(content, revision_, tree)
+        planned = (
+            *changes(old, new, root),
+            _Change(
+                Path(MARKER),
+                _File((current.sha + "\n").encode(), False),
+                _File((selected.sha + "\n").encode(), False),
+            ),
+        )
+        if clean_head(root, git_env) != head:
+            raise InstallError(65, "registry changed during download; source stays unchanged")
+        for change in planned:
+            if file_state(root, change.relative) != change.before:
+                raise InstallError(
+                    65, f"source changed during download; source stays unchanged: {change.relative}"
+                )
+        paths = [str(change.relative) for change in planned]
+        with ExitStack() as rollback:
+            # Restore only this operation's files and index entries if the commit fails.
+            _ = rollback.callback(git, root, git_env, "reset", "-q", "HEAD", "--", *paths)
+            for change in planned:
+                _ = rollback.callback(write_state, root, change.relative, change.before)
+                write_state(root, change.relative, change.after)
+            _ = git(root, git_env, "add", "--", *paths)
+            _ = git(
+                root,
+                git_env,
+                "-c",
+                "user.name=Ayi installer",
+                "-c",
+                "user.email=installer@ayi.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                f"chore: update Ayi to {selected.sha}",
+                "--only",
+                "--",
+                *paths,
+            )
+            _ = rollback.pop_all()
+    try:
+        apply(target, git_env)
+    except InstallError as error:
+        raise InstallError(
+            error.status,
+            f"source updated to {selected.sha[:12]}, but setup failed. Run ayi update again. {error.message}",
+        ) from error
+    print(f"Updated Ayi to {selected.sha[:12]}.")
+
+
+def version(root: Path) -> str:
+    with (root / "pyproject.toml").open("rb") as project_file:
+        project: object = tomllib.load(project_file).get("project")
+    value = project.get("version") if mapping(project) else None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9][a-zA-Z0-9.+-]*", value) is None:
+        raise InstallError(65, "project version is invalid")
+    result = f"ayi {value}"
+    if (root / MARKER).exists():
+        result += f" ({owned_revision(root).sha[:12]})"
+    return result
+
+
 def launcher(source: str) -> str:
     return (
         "#!/bin/sh\n# Generated from bootstrap.py. Do not edit this file.\n"
@@ -271,16 +457,27 @@ def launcher(source: str) -> str:
 
 
 def main(arguments: list[str]) -> int:
-    if arguments:
-        print("ayi: usage: install.sh", file=sys.stderr)
+    if arguments not in ([], ["update"], ["--version"], ["-V"]):
+        print("ayi: usage: ayi update | ayi --version | ayi -V", file=sys.stderr)
         return 64
     try:
-        install(locations(os.environ), os.environ)
+        root = (
+            locations(os.environ).root if __file__ == "<stdin>" else Path(__file__).resolve().parent
+        )
+        if arguments == ["update"]:
+            update(root, os.environ, download)
+        elif arguments:
+            print(version(root))
+        else:
+            install(locations(os.environ), os.environ)
     except InstallError as error:
         print(f"ayi: {error.message}", file=sys.stderr)
         return error.status
     except tarfile.TarError:
         print("ayi: source archive is invalid", file=sys.stderr)
+        return 65
+    except tomllib.TOMLDecodeError:
+        print("ayi: project metadata is invalid", file=sys.stderr)
         return 65
     except OSError as error:
         print(f"ayi: installation failed: {error.strerror}", file=sys.stderr)

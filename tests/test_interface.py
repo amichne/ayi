@@ -3,12 +3,42 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from .conftest import Shell, copy_runtime
 
 
 def prepare(shell: Shell) -> None:
     copy_runtime(shell, "install.py")
     assert shell.run("install", "apply").returncode == 0
+
+
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_uses_project_metadata_without_runtime_sync(shell: Shell, flag: str) -> None:
+    prepare(shell)
+    project = shell.root / "pyproject.toml"
+    _ = project.write_text(project.read_text().replace('version = "0.1.0"', 'version = "9.8.7"'))
+    # An installed runtime must not need uv, Git, or network access to show its version.
+    env = dict(shell.env, PATH="/usr/bin:/bin")
+    result = subprocess.run(
+        [str(Path(shell.env["HOME"]) / ".local/bin/ayi"), flag],
+        env=env,
+        cwd=shell.cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ayi 9.8.7\n"
+    assert result.stderr == ""
+    assert shell.run(flag, "extra").returncode == 64
+
+
+def test_update_launcher_reaches_installer_and_rejects_arguments(shell: Shell) -> None:
+    result = shell.run("update")
+    assert result.returncode == 65, result.stderr
+    assert "Git" in result.stderr
+    assert shell.run("update", "--force").returncode == 64
 
 
 def test_public_ayi_command_is_offline_and_rejects_unknown_names(tmp_path: Path) -> None:

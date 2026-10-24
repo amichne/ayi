@@ -10,8 +10,10 @@ A fork preserves its parent and needs a separate generated draft.
 `create.py` owns Pi and Codex implementation adapters. Keep generation output in local logs.
 `install.py` owns installed link discovery and ownership. `bin/ayi-tool` dispatches direct tool invocations.
 Keep shell startup outside the installer. Force never bypasses review, verification, or dirty-registry protection.
-`bootstrap.py` owns archive installation and the private Git registry.
-Its seed commands ignore ambient Git repository and index selectors.
+`bootstrap.py` owns archive installation, updates, version output, and the private Git registry.
+`pyproject.toml` owns the version. Archive version output also names the source commit.
+Updates preserve generated tools and local commits. Dirty registries and source conflicts cause rejection.
+Its Git commands ignore ambient Git repository and index selectors.
 `install.sh` is generated from `bootstrap.py`. Regenerate it with
 `uv run --locked python -c 'from pathlib import Path; from bootstrap import launcher; Path("install.sh").write_text(launcher(Path("bootstrap.py").read_text()))'`.
 The launcher uses uv-managed Python and the standard library.

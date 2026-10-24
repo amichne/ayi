@@ -167,6 +167,10 @@ def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
     for args, expected in (
         (["new", "--f"], ["--force"]),
         (["res"], ["resume"]),
+        (["up"], ["update"]),
+        (["--v"], ["--version"]),
+        (["-V"], ["-V"]),
+        (["update", "--f"], []),
         (["new", "--design"], ["--design-model"]),
         (["new", "--implementation-harness", "c"], ["codex"]),
         (["fork", "flow-example", "--c"], ["--checkpoint"]),
