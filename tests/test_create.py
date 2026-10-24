@@ -13,7 +13,9 @@ from .conftest import Shell, copy_runtime, init_git
 def new_command(
     shell: Shell, prompt: str, *, input_text: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    return shell.run("new", "greet", prompt, input_text="1\n" + input_text)
+    return shell.run(
+        "new", "greet", prompt, input_text="1\n/submit\n/implement\n/draft\n" + input_text
+    )
 
 
 @pytest.mark.parametrize("reject_commit", [False, True])
@@ -170,7 +172,7 @@ def test_decline_keeps_draft_unregistered(shell: Shell) -> None:
     result = new_command(shell, "Greet", input_text="n\n")
     assert result.returncode != 0
     assert not (shell.root / "tasks/greet").exists()
-    assert list((shell.root / "drafts").glob("*/task"))
+    assert list((Path(shell.env["XDG_STATE_HOME"]) / "ayi/sessions").glob("*/drafts/*/task"))
 
 
 def test_decline_registration_keeps_verified_task_unregistered(shell: Shell) -> None:

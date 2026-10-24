@@ -92,7 +92,11 @@ def seed_command(shell: Shell) -> None:
 def test_adaptive_factory_registers_runnable_tool(shell: Shell, args: tuple[str, ...]) -> None:
     home = prepare(shell)
     prompt = "Greet a person\n" if len(args) < 2 else ""
-    result = shell.run(*args, input_text=prompt + "1\n2\nUse hello, preserve spaces\ny\ny\n")
+    result = shell.run(
+        *args,
+        input_text=prompt
+        + "1\n/submit\n2\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+    )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "How should greet receive a name?" in result.stderr
     assert "Which greeting style?" in result.stderr
@@ -112,7 +116,11 @@ def test_named_tool_is_available_on_path_with_attributed_help(
     home = prepare(shell)
     arguments = ("new", "abc", "Greet", "a person") if with_prompt else ("new", "abc")
     answer = "" if with_prompt else "Greet a person\n"
-    result = shell.run(*arguments, input_text=answer + "1\nUse hello, preserve spaces\ny\ny\n")
+    result = shell.run(
+        *arguments,
+        input_text=answer
+        + "1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+    )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Name your greeting tool?" not in result.stderr
     assert "Invocation: abc [args]" in result.stdout
@@ -181,7 +189,10 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     _ = hook.write_text("#!/bin/sh\nexit 1\n")
     hook.chmod(0o755)
     result = shell.run(
-        "modify", "greet", "Use hello", input_text="Use hello, preserve spaces\ny\ny\n"
+        "modify",
+        "greet",
+        "Use hello",
+        input_text="Use hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode != 0
     assert "Verification passed" in result.stderr
@@ -192,7 +203,9 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     assert git(shell, "ls-files", "--stage") == before_index
     hook.unlink()
     result = shell.run(
-        "modify", "greet", input_text="Use hello\nUse hello, preserve spaces\ny\ny\n"
+        "modify",
+        "greet",
+        input_text="Use hello\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert shell.tool("greet", "Grace Hopper").stdout == "hello Grace Hopper\n"
@@ -228,7 +241,10 @@ def test_modify_never_overwrites_unapproved_changes(
     head = git(shell, "rev-parse", "HEAD")
     answer = "n\n" if state == "decline" else "y\n"
     result = shell.run(
-        "modify", "greet", "Use hello", input_text="Use hello, preserve spaces\ny\n" + answer
+        "modify",
+        "greet",
+        "Use hello",
+        input_text="Use hello, preserve spaces\n/submit\n/implement\n/draft\ny\n" + answer,
     )
     assert result.returncode != 0
     assert task.read_text() == ("concurrent edit\n" if state == "concurrent" else before)
@@ -303,7 +319,11 @@ def test_force_replaces_only_files_or_links_and_restores_them_on_commit_failure(
     hook = shell.root / ".git/hooks/pre-commit"
     _ = hook.write_text("#!/bin/sh\nexit 1\n")
     hook.chmod(0o755)
-    failed = shell.run(*args, "--force", input_text="1\nUse hello, preserve spaces\ny\ny\n")
+    failed = shell.run(
+        *args,
+        "--force",
+        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+    )
     assert failed.returncode != 0
     assert not (shell.root / "tasks/abc").exists()
     assert git(shell, "status", "--porcelain") == ""
@@ -325,7 +345,7 @@ def test_force_replaces_only_files_or_links_and_restores_them_on_commit_failure(
         "--force",
         "abc",
         "Greet a person",
-        input_text="1\nUse hello, preserve spaces\ny\ny\n",
+        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
     )
     assert passed.returncode == 0, passed.stderr + passed.stdout
     assert shell.tool("abc", "after replacement").stdout == "hello after replacement\n"
@@ -351,7 +371,7 @@ def test_invalid_help_prevents_forced_installation(shell: Shell, help_body: str)
         "--force",
         "abc",
         "Greet a person",
-        input_text="1\nUse hello, preserve spaces\ny\ny\n",
+        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 65, result.stderr + result.stdout
     assert "tool must provide nonempty --help output and exit 0" in result.stderr
@@ -368,11 +388,16 @@ def test_force_rebuilds_clean_tool_without_bypassing_review_or_dirty_protection(
     old = (shell.root / "tasks/greet").read_bytes()
     assert shell.run("new", "greet", "Use hello").returncode == 65
     args = ("new", "--force", "greet", "Use hello")
-    denied = shell.run(*args, input_text="1\nUse hello, preserve spaces\nn\n")
+    denied = shell.run(
+        *args, input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\nn\n"
+    )
     assert denied.returncode == 1
     assert (shell.root / "tasks/greet").read_bytes() == old
     assert not (home / ".local/bin/greet").exists()
-    result = shell.run(*args, input_text="1\nUse hello, preserve spaces\ny\ny\n")
+    result = shell.run(
+        *args,
+        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+    )
     assert result.returncode == 0, result.stderr + result.stdout
     assert shell.tool("greet", "recreated").stdout == "hello recreated\n"
     _ = (shell.root / "tasks/greet").write_text("uncommitted change\n")

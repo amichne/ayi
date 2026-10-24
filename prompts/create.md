@@ -37,7 +37,8 @@ Use a short shell task for simple native CLI orchestration. Use locked uv Python
 Do not depend on this conversation, the draft directory, or machine-specific paths.
 The verification must assert the requested output and the nearest invalid input or counterexample.
 Use disposable fixtures. Do not read credentials, change host files, or contact remote services during verification.
-Do not execute generated code or install files. The caller presents the source and requests approval.
+Do not execute generated code or install files. The caller supplies paths to the source files and requests approval.
+Do not print the scripts. Return only a short summary and the draft paths.
 Leave `status = "needs-input"` when requirements remain unresolved.
 
 Interface contract (all objects are closed; no extra keys):

@@ -108,19 +108,57 @@ def resolve(request: Request) -> list[Candidate]:
         if not before:
             return [
                 Candidate(value=name)
-                for name in ("new", "modify", "explain", "list", "install", "shell", "--help")
+                for name in (
+                    "new",
+                    "modify",
+                    "explain",
+                    "sessions",
+                    "resume",
+                    "fork",
+                    "review",
+                    "list",
+                    "install",
+                    "shell",
+                    "--help",
+                )
                 if name.startswith(prefix)
             ]
         if before[0] in ("new", "modify") and "--" not in before and prefix.startswith("-"):
+            return [
+                Candidate(value=name)
+                for name in (
+                    "--force",
+                    "--design-model",
+                    "--implementation-harness",
+                    "--implementation-model",
+                )
+                if name.startswith(prefix) and name not in before
+            ]
+        if (
+            before[0] in ("new", "modify")
+            and "--" not in before
+            and before[-1] == "--implementation-harness"
+        ):
+            return [Candidate(value=name) for name in ("pi", "codex") if name.startswith(prefix)]
+        if before[0] in ("fork", "review") and prefix.startswith("-"):
             return (
-                [Candidate(value="--force")]
-                if "--force".startswith(prefix) and "--force" not in before
+                [Candidate(value="--checkpoint")]
+                if "--checkpoint".startswith(prefix) and "--checkpoint" not in before
                 else []
             )
-        if before[0] in ("modify", "explain") and not [
-            word for word in before[1:] if word != "--force"
-        ]:
-            return [Candidate(value=name) for name in commands() if name.startswith(prefix)]
+        if before[0] in ("modify", "explain"):
+            value_options = ("--design-model", "--implementation-harness", "--implementation-model")
+            if before[-1] in value_options:
+                return []
+            tokens = iter(before[1:])
+            factory_positionals: list[str] = []
+            for word in tokens:
+                if word in value_options:
+                    _ = next(tokens, None)
+                elif word != "--force" and word.partition("=")[0] not in value_options:
+                    factory_positionals.append(word)
+            if not factory_positionals:
+                return [Candidate(value=name) for name in commands() if name.startswith(prefix)]
         choices = {"install": ("plan", "apply", "uninstall"), "shell": ("init",)}
         if len(before) == 1:
             return [

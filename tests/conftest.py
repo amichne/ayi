@@ -57,6 +57,7 @@ def shell(tmp_path: Path) -> Shell:
         "completion.py",
         "shell.py",
         "factory.py",
+        "sessions.py",
         "create.py",
         "install.py",
     ):

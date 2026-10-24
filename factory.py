@@ -1,42 +1,34 @@
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
 import sys
 import tomllib
-from typing import Annotated, Literal
+from pathlib import Path
+from typing import NoReturn, assert_never, override
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 import create
 import install
+import sessions
 import ui
 from completion import commands, read_interface
-
-type Line = Annotated[
-    str, StringConstraints(min_length=1, max_length=600, pattern=r"^[^\x00-\x1f\x7f]+$")
-]
-type Name = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,47}$")]
-
-
-class Question(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    status: Literal["question"]
-    topic: Literal["name", "usage", "requirements"]
-    question: Line
-    options: Annotated[list[Line], Field(min_length=2, max_length=5)]
-
-
-class Ready(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    status: Literal["ready"]
-    name: Name
-    requirements: Annotated[str, StringConstraints(min_length=1, max_length=20000)]
-
-
-RESPONSE: TypeAdapter[Question | Ready] = TypeAdapter(
-    Annotated[Question | Ready, Field(discriminator="status")]
+from sessions import (
+    RESPONSE,
+    Answer,
+    Ask,
+    Direction,
+    Done,
+    Next,
+    Ready,
+    ReviewAnswer,
+    ReviewDraft,
+    ReviewPlan,
+    Session,
+    Settings,
 )
 
 
@@ -46,12 +38,20 @@ class FactoryError(Exception):
         self.status = status
 
 
-def model(mode: str, request: str) -> str:
+class CommandParser(argparse.ArgumentParser):
+    @override
+    def error(self, message: str) -> NoReturn:
+        raise FactoryError(f"{message}. See {self.prog} --help.", 64)
+
+
+def model(mode: str, request: str, model_name: str | None = None) -> str:
     with ui.activity(f"ayi / {mode} / thinking..."):
-        return model_response(mode, request)
+        return model_response(mode, request, model_name)
 
 
-def model_response(mode: str, request: str) -> str:
+def model_response(mode: str, request: str, model_name: str | None = None) -> str:
+    if shutil.which("pi") is None:
+        raise FactoryError("missing dependency: pi", 69)
     result = subprocess.run(
         [
             "pi",
@@ -66,6 +66,7 @@ def model_response(mode: str, request: str) -> str:
             "--offline",
             "--append-system-prompt",
             str(create.ROOT / f"prompts/{mode}.md"),
+            *(["--model", model_name] if model_name is not None else []),
             "--",
             request,
         ],
@@ -88,24 +89,6 @@ def entry(label: str) -> str:
         raise FactoryError("cancelled", 130) from None
     if not answer:
         raise FactoryError("cancelled (empty answer)", 130)
-    return answer
-
-
-def choose(question: Question, action: str) -> str:
-    options = [*question.options, "Write a different answer..."]
-    while True:
-        try:
-            answer = ui.entry(f"{action} / {question.topic}\n{question.question}", options)
-        except EOFError:
-            raise FactoryError("cancelled", 130) from None
-        if not answer:
-            raise FactoryError("cancelled (empty answer)", 130)
-        if not answer.isdecimal():
-            break
-        ui.status("Choose a listed number, or type an answer.")
-    if answer == options[-1]:
-        answer = entry("Your answer:")
-    ui.status(f"Selected: {answer}")
     return answer
 
 
@@ -134,64 +117,331 @@ def check_destination(name: str, force: bool = False) -> None:
         )
 
 
-def interview(
-    action: str, prompt: str, name: str | None, source: dict[str, str]
-) -> tuple[Ready, str]:
-    answers: list[dict[str, str]] = []
-    for _ in range(20):
-        required = (
-            "name"
-            if name is None
-            else (
-                "usage"
-                if action == "new" and not any(item["topic"] == "usage" for item in answers)
-                else None
-            )
+def request_for(session: Session) -> str:
+    return json.dumps(
+        {
+            "action": session.action,
+            "request": session.prompt,
+            "name": session.name,
+            "source": session.source,
+            "answers": [
+                {"topic": a.question.topic, "question": a.question.question, "answer": a.answer}
+                for a in session.answers
+            ],
+            "directions": [d.model_dump() for d in session.directions],
+            "required_topic": session.required_topic,
+        }
+    )
+
+
+def overview(session: Session) -> None:
+    ui.status(f"Request: {session.prompt}")
+    for index, answer in enumerate(session.answers, 1):
+        ui.status(f"{index}. {answer.question.question}\n   {answer.answer}")
+    for direction in session.directions:
+        ui.status(f"Direction after answer {direction.after_answer}: {direction.instruction}")
+    if isinstance(session.phase, (ReviewPlan, ReviewDraft)):
+        ui.review("Proposed approach", session.phase.plan.requirements.encode())
+    ui.status(f"Design: pi / {session.settings.design_model or 'default'}")
+    implementation = session.settings.implementation
+    ui.status(f"Implementation: {implementation.harness} / {implementation.model or 'default'}")
+
+
+def select_settings(current: Settings) -> Settings:
+    design = ui.entry(
+        "Design model for Pi (default uses Pi settings):", initial=current.design_model or "default"
+    )
+    harness = ui.entry(
+        "Implementation harness:", ("pi", "codex"), initial=current.implementation.harness
+    )
+    model_name = ui.entry(
+        "Implementation model (default uses harness settings):",
+        initial=current.implementation.model or "default",
+    )
+    return Settings.model_validate(
+        {
+            "design_model": None if design == "default" else design,
+            "implementation": {
+                "harness": harness,
+                "model": None if model_name == "default" else model_name,
+            },
+        }
+    )
+
+
+def original_for(session: Session) -> create.Original | None:
+    if session.registry != str(create.ROOT.resolve()):
+        raise FactoryError("session belongs to another registry")
+    name = session.name
+    if name is None:
+        return None
+    check_destination(name, session.force)
+    if session.source:
+        original = create.read_original(name)
+        if isinstance(original, create.Rejected):
+            raise FactoryError("command changed since the session started")
+        source = {
+            str(p.relative_to(create.ROOT)): v[0].decode()
+            for p, v in original.files.items()
+            if v is not None
+        }
+        modes = {
+            str(p.relative_to(create.ROOT)): v[1]
+            for p, v in original.files.items()
+            if v is not None
+        }
+        if source != session.source or modes != session.source_modes:
+            raise FactoryError("command changed since the session started")
+        return original
+    if any(path.exists() or path.is_symlink() for path in create.command_paths(name)):
+        raise FactoryError(f"command already exists: {name}; use ayi modify {name}")
+    return None
+
+
+def next_phase(session: Session) -> Ask | ReviewPlan:
+    request = request_for(session)
+    try:
+        response = RESPONSE.validate_json(
+            model("interview", request, session.settings.design_model)
         )
-        request = json.dumps(
-            {
-                "action": action,
-                "request": prompt,
-                "name": name,
-                "source": source,
-                "answers": answers,
-                "required_topic": required,
-            }
+    except ValidationError as error:
+        raise FactoryError("Pi returned an invalid interview response; resume to retry.") from error
+    required = session.required_topic
+    if isinstance(response, Ready):
+        if required is not None or response.name != session.name:
+            raise FactoryError("Pi skipped a required question or changed the agreed name.")
+        return ReviewPlan(plan=response)
+    if len(session.answers) >= 20:
+        raise FactoryError(
+            "Interview reached 20 answers. Fork an earlier checkpoint to revise the scope."
         )
-        try:
-            response = RESPONSE.validate_json(model("interview", request))
-        except ValidationError as error:
-            raise FactoryError(
-                "Pi returned an invalid interview response; retry the request."
-            ) from error
-        if isinstance(response, Ready):
-            if required is not None or response.name != name:
-                raise FactoryError("Pi skipped a required question or changed the agreed name.")
-            return response, request
-        if (required is not None and response.topic != required) or (
-            response.topic == "name" and name is not None
-        ):
-            raise FactoryError("Pi returned a question out of sequence.")
-        if response.topic == "name" and any(
-            not install.valid_name(option) for option in response.options
-        ):
-            raise FactoryError("Pi suggested an invalid command name.")
-        answer = choose(response, action)
-        if response.topic == "name":
-            while not install.valid_name(answer):
-                answer = entry(
-                    "Use 1-48 lowercase letters, digits or hyphens; start with a letter:"
+    if (required is not None and response.topic != required) or (
+        response.topic == "name" and session.name is not None
+    ):
+        raise FactoryError("Pi returned a question out of sequence.")
+    if response.topic == "name" and any(
+        not install.valid_name(option) for option in response.options
+    ):
+        raise FactoryError("Pi suggested an invalid command name.")
+    return Ask(question=response)
+
+
+CONTROLS = (
+    "/clarify <direction> · /show-me · /unclear · /review · /edit N · /settings · /fork · /pause"
+)
+
+
+def run_session(directory: Path, session: Session) -> int:
+    ui.status(f"Session: {directory.name}. Resume: ayi resume {directory.name}")
+    _ = original_for(session) if not isinstance(session.phase, Done) else None
+    while True:
+        phase = session.phase
+        if isinstance(phase, Done):
+            ui.status(f"Session complete: {phase.name}")
+            return 0
+        if isinstance(phase, Next):
+            session = session.model_copy(update={"phase": next_phase(session)})
+            sessions.save(directory, session)
+            continue
+        ui.status(CONTROLS)
+        match phase:
+            case Ask(question=question):
+                value = ui.entry(
+                    f"{session.action} / {question.topic}\n{question.question}", question.options
                 )
-            name = answer
-            check_destination(name)
-            if any(path.exists() or path.is_symlink() for path in create.command_paths(name)):
-                raise FactoryError(f"command already exists: {name}; use ayi modify {name}")
-        answers.append({"topic": response.topic, "question": response.question, "answer": answer})
-    raise FactoryError("Interview exceeded 20 questions; retry with a more specific request.")
+            case ReviewAnswer(question=question, answer=answer):
+                ui.status(f"Review answer: {question.question}\n{answer}")
+                value = ui.entry(
+                    "Submit this answer to the design model?", ("Submit answer", "Edit answer")
+                )
+            case ReviewPlan() | ReviewDraft():
+                overview(session)
+                value = ui.entry(
+                    "Review the complete design before the next step:",
+                    (
+                        "Implement" if isinstance(phase, ReviewPlan) else "Review draft",
+                        "/settings",
+                        "/clarify",
+                        "/show-me",
+                        "/pause",
+                    ),
+                )
+            case _:
+                assert_never(phase)
+        value = {
+            "Submit answer": "/submit",
+            "Edit answer": "/edit",
+            "Implement": "/implement",
+            "Review draft": "/draft",
+            "clarify": "/clarify",
+            "show me": "/show-me",
+            "/show me": "/show-me",
+            "unclear": "/unclear",
+        }.get(value, value)
+        command, _, detail = value.partition(" ")
+        if command == "/pause":
+            ui.status(f"Saved. Resume: ayi resume {directory.name}")
+            return 0
+        if command == "/fork":
+            child = sessions.allocate()
+            with sessions.locked(child):
+                forked = (
+                    session.model_copy(update={"phase": ReviewPlan(plan=phase.plan)})
+                    if isinstance(phase, ReviewDraft)
+                    else session
+                )
+                sessions.save(child, forked)
+            ui.status(f"Fork saved. Continue: ayi resume {child.name}")
+            return 0
+        if command == "/review":
+            overview(session)
+            continue
+        if command == "/settings":
+            settings = select_settings(session.settings)
+            # A different implementation choice needs a fresh draft and explicit invocation.
+            updated_phase = ReviewPlan(plan=phase.plan) if isinstance(phase, ReviewDraft) else phase
+            session = session.model_copy(update={"settings": settings, "phase": updated_phase})
+        elif command in ("/show-me", "/unclear"):
+            explanation = model(
+                "discuss",
+                json.dumps(
+                    {
+                        "interview": json.loads(request_for(session)),
+                        "current": phase.model_dump(),
+                        "request": detail
+                        or "Explain the approach with a concrete example and tradeoffs. Do not change the design.",
+                    }
+                ),
+                session.settings.design_model,
+            )
+            ui.explain(explanation)
+            continue
+        elif command == "/clarify":
+            direction = Direction(
+                after_answer=len(session.answers),
+                instruction=detail or entry("What direction must change?"),
+                context=phase,
+            )
+            session = session.model_copy(
+                update={"directions": (*session.directions, direction), "phase": Next()}
+            )
+        elif command == "/edit" and detail:
+            if not detail.isdecimal() or not 1 <= int(detail) <= len(session.answers):
+                ui.status("Use /edit N with a listed answer number.")
+                continue
+            index = int(detail) - 1
+            answer = session.answers[index]
+            session = session.model_copy(
+                update={
+                    "answers": session.answers[:index],
+                    "directions": tuple(d for d in session.directions if d.after_answer <= index),
+                    "phase": ReviewAnswer(question=answer.question, answer=answer.answer),
+                }
+            )
+            ui.status("Later answers leave this branch. Earlier checkpoints preserve them.")
+        elif command == "/edit" and isinstance(phase, ReviewAnswer):
+            edited = ui.entry("Edit your answer:", initial=phase.answer)
+            session = session.model_copy(
+                update={"phase": ReviewAnswer(question=phase.question, answer=edited)}
+            )
+        elif command == "/submit" and isinstance(phase, ReviewAnswer):
+            if phase.question.topic == "name" and not install.valid_name(phase.answer):
+                ui.status("Use /edit to enter a valid command name.")
+                continue
+            session = session.model_copy(
+                update={
+                    "answers": (
+                        *session.answers,
+                        Answer(question=phase.question, answer=phase.answer),
+                    ),
+                    "phase": Next(),
+                }
+            )
+            _ = original_for(session)
+        elif command == "/implement" and isinstance(phase, ReviewPlan):
+            _ = original_for(session)
+            request = (
+                f"The factory interview is complete. Implement the resolved requirements without further questions.\n"
+                f"Keep the exact command name: {phase.plan.name}.\n"
+                f"Resolved requirements:\n{phase.plan.requirements}\n"
+                f"Request, existing source, and user answers (JSON):\n{request_for(session)}"
+            )
+            drafts = directory / "drafts"
+            drafts.mkdir(exist_ok=True, mode=0o700)
+            draft_directory = create.new_directory(drafts)
+            status = create.generate(request, draft_directory, session.settings.implementation)
+            if status:
+                return status
+            session = session.model_copy(
+                update={"phase": ReviewDraft(plan=phase.plan, directory=str(draft_directory))}
+            )
+        elif command == "/draft" and isinstance(phase, ReviewDraft):
+            original = original_for(session)
+            status = create.finish(
+                Path(phase.directory), name=phase.plan.name, original=original, force=session.force
+            )
+            if status:
+                return status
+            session = session.model_copy(update={"phase": Done(name=phase.plan.name)})
+        elif value.startswith("/"):
+            ui.status("That action is unavailable here. " + CONTROLS)
+            continue
+        elif isinstance(phase, Ask) and value:
+            session = session.model_copy(
+                update={"phase": ReviewAnswer(question=phase.question, answer=value)}
+            )
+        else:
+            ui.status("Choose an action or use /pause to save and exit.")
+            continue
+        sessions.save(directory, session)
+
+
+def session_command(arguments: list[str]) -> int:
+    action = arguments[0]
+    if action == "sessions":
+        if len(arguments) != 1:
+            raise FactoryError("usage: ayi sessions", 64)
+        for directory in sorted(sessions.session_root().glob("flow-*")):
+            if directory.is_dir() and not directory.is_symlink():
+                state = sessions.load(directory)
+                ui.status(
+                    f"{directory.name}  {state.phase.kind}  {state.name or '(unnamed)'}  {state.prompt}"
+                )
+        return 0
+    parser = CommandParser(prog=f"ayi {action}")
+    _ = parser.add_argument("session")
+    _ = parser.add_argument("--checkpoint", type=int)
+    options = parser.parse_args(arguments[1:])
+    directory = sessions.find(str(options.session))
+    checkpoint = options.checkpoint
+    if action == "resume" and checkpoint is not None:
+        raise FactoryError("Use fork --checkpoint N to continue an earlier checkpoint.", 64)
+    with sessions.locked(directory):
+        state = sessions.load(directory, checkpoint)
+        if action == "review":
+            overview(state)
+            for path in sessions.checkpoints(directory):
+                ui.status(
+                    f"Checkpoint {int(path.stem)}: {sessions.load(directory, int(path.stem)).phase.kind}"
+                )
+            return 0
+        if action == "resume":
+            return run_session(directory, state)
+    child = sessions.allocate()
+    # Forks never share a mutable generated draft with the parent.
+    if isinstance(state.phase, ReviewDraft):
+        state = state.model_copy(update={"phase": ReviewPlan(plan=state.phase.plan)})
+    if isinstance(state.phase, Done):
+        raise FactoryError("Fork an earlier checkpoint to change a completed session.", 64)
+    with sessions.locked(child):
+        sessions.save(child, state)
+        return run_session(child, state)
 
 
 def main(arguments: list[str]) -> int:
     action = arguments[0] if arguments else "new"
+    if action in ("sessions", "resume", "fork", "review"):
+        return session_command(arguments)
     if action == "list":
         if arguments != ["list"]:
             raise FactoryError("usage: ayi list", 64)
@@ -215,16 +465,24 @@ def main(arguments: list[str]) -> int:
             rows.append((command, summary, invocation))
         ui.command_list(rows)
         return 0
-    values: list[str] = []
-    force = False
-    literal = False
-    for value in arguments[1:]:
-        if value == "--" and not literal:
-            literal = True
-        elif value == "--force" and not literal:
-            force = True
-        else:
-            values.append(value)
+    parser = CommandParser(prog=f"ayi {action}")
+    _ = parser.add_argument("--force", action="store_true")
+    _ = parser.add_argument("--design-model")
+    _ = parser.add_argument("--implementation-harness", choices=("pi", "codex"), default="pi")
+    _ = parser.add_argument("--implementation-model")
+    _ = parser.add_argument("values", nargs="*")
+    options = parser.parse_intermixed_args(arguments[1:])
+    values: list[str] = options.values
+    force: bool = options.force
+    settings = Settings.model_validate(
+        {
+            "design_model": options.design_model,
+            "implementation": {
+                "harness": options.implementation_harness,
+                "model": options.implementation_model,
+            },
+        }
+    )
     if (
         action not in ("new", "modify", "explain")
         or (action in ("modify", "explain") and not values)
@@ -271,24 +529,41 @@ def main(arguments: list[str]) -> int:
     if shutil.which("pi") is None:
         raise FactoryError("missing dependency: pi", 69)
     if action == "explain":
-        ui.explain(model("explain", json.dumps({"name": name, "source": source})))
+        ui.explain(
+            model("explain", json.dumps({"name": name, "source": source}), settings.design_model)
+        )
         return 0
     prompt = " ".join(values).strip() or entry(
         "What shell tool should Ayi build?" if action == "new" else f"What should change in {name}?"
     )
-    ready, transcript = interview(action, prompt, name, source)
-    request = (
-        f"The factory interview is complete. Implement the resolved requirements without further questions.\n"
-        f"Keep the exact command name: {ready.name}.\n"
-        f"Resolved requirements:\n{ready.requirements}\n"
-        f"Request, existing source, and user answers (JSON):\n{transcript}"
+    state = Session(
+        registry=str(create.ROOT.resolve()),
+        action="modify" if action == "modify" else "new",
+        prompt=prompt,
+        fixed_name=name,
+        source=source,
+        source_modes={
+            str(p.relative_to(create.ROOT)): value[1]
+            for p, value in original.files.items()
+            if value is not None
+        }
+        if original
+        else {},
+        force=force,
+        settings=settings,
     )
-    return create.main([request], name=ready.name, original=original, force=force)
+    directory = sessions.allocate()
+    with sessions.locked(directory):
+        sessions.save(directory, state)
+        return run_session(directory, state)
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
+    except (sessions.SessionError, EOFError) as error:
+        print(f"ayi: {error or 'cancelled; resume the saved session'}", file=sys.stderr)
+        raise SystemExit(130 if isinstance(error, EOFError) else 65) from error
     except FactoryError as error:
         print(f"ayi: {error}", file=sys.stderr)
         raise SystemExit(error.status) from error

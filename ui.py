@@ -72,32 +72,41 @@ def activity(message: str) -> Iterator[None]:
         yield
 
 
-def entry(label: str, options: Sequence[str] = ()) -> str:
+def entry(label: str, options: Sequence[str] = (), *, initial: str = "") -> str:
     """Candidates and context always precede the final input row.
 
-    Up/down and Tab select candidates; Enter accepts the selection or free text.
+    Up/down and Tab copy a candidate into the editable input row.
     The transient region collapses into a stable scrollback record on completion.
     """
     if not interactive():
         print(label, file=sys.stderr, flush=True)
         for index, option in enumerate(options, 1):
             print(f"  {index}  {option}", file=sys.stderr)
+        if initial:
+            print(
+                f"Current answer: {initial}\nEnter keeps it. Type a replacement or + text to append.",
+                file=sys.stderr,
+            )
         print("ayi > ", end="", file=sys.stderr, flush=True)
         answer = input().strip()
+        if initial:
+            answer = initial + answer[1:] if answer.startswith("+") else answer or initial
         if options and answer.isdecimal() and 1 <= int(answer) <= len(options):
             answer = options[int(answer) - 1]
         return answer
 
     selected: int | None = None
     field = TextArea(
-        height=1, prompt=[("class:accent", "  ayi ❯ ")], multiline=False, wrap_lines=False
+        height=1,
+        text=initial,
+        prompt=[("class:accent", "  ayi ❯ ")],
+        multiline=False,
+        wrap_lines=False,
     )
-
-    def matches() -> list[str]:
-        return [option for option in options if field.text.casefold() in option.casefold()]
+    field.buffer.cursor_position = len(initial)
+    candidates = [*options, ""] if options else []
 
     def context() -> list[tuple[str, str]]:
-        candidates = matches()
         heading, _, question = label.partition("\n")
         rows: list[tuple[str, str]] = [
             ("class:accent", "  ┌─ "),
@@ -116,7 +125,7 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
                     ("class:accent" if focused else "class:muted", "  │  "),
                     (
                         "class:selected" if focused else "",
-                        f" {'❯' if focused else ' '} {candidates[index]} ",
+                        f" {'❯' if focused else ' '} {candidates[index] or 'Write your own answer'} ",
                     ),
                     ("", "\n"),
                 ]
@@ -126,7 +135,7 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
             help_text = (
                 "↑↓ tab · ↵ · esc"
                 if app.output.get_size().columns < 45
-                else "↑↓ navigate · tab next · ↵ accept · esc cancel"
+                else "↑↓ choose · type to edit · ↵ accept · esc cancel"
             )
         rows.extend([("class:muted", "  └─ "), ("class:muted", help_text)])
         return rows
@@ -135,26 +144,20 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
 
     def _next_choice(_event: object) -> None:
         nonlocal selected
-        candidates = matches()
         if candidates:
             selected = 0 if selected is None else (selected + 1) % len(candidates)
+            field.text = candidates[selected]
+            field.buffer.cursor_position = len(field.text)
 
     def _previous_choice(_event: object) -> None:
         nonlocal selected
-        candidates = matches()
         if candidates:
             selected = len(candidates) - 1 if selected is None else (selected - 1) % len(candidates)
+            field.text = candidates[selected]
+            field.buffer.cursor_position = len(field.text)
 
     def _accept(_event: object) -> None:
-        candidates = matches()
-        answer = (
-            candidates[selected]
-            if selected is not None and selected < len(candidates)
-            else field.text
-        )
-        if options and answer.isdecimal() and 1 <= int(answer) <= len(options):
-            answer = options[int(answer) - 1]
-        app.exit(result=answer.strip())
+        app.exit(result=field.text.strip())
 
     def _cancel(_event: object) -> None:
         app.exit(exception=EOFError())
@@ -167,11 +170,6 @@ def entry(label: str, options: Sequence[str] = ()) -> str:
     for key in ("escape", "c-c", "c-d"):
         _ = bindings.add(key, eager=True)(_cancel)
 
-    def changed(_buffer: object) -> None:
-        nonlocal selected
-        selected = None
-
-    field.buffer.on_text_changed += changed
     app: Application[str] = Application(
         layout=Layout(
             HSplit(
