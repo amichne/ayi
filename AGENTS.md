@@ -4,6 +4,10 @@
 `create.py` owns draft review, verification, and local Git registration.
 The registry uses this checkout's Git index. Keep dotfiles and HOME Git indexes separate.
 `factory.py` owns the model-driven tool interview and read-only explanations.
+`sessions.py` owns interview values and local checkpoints under XDG state.
+Keep each submitted answer, pending answer, and proposed approach in a checkpoint.
+A fork preserves its parent and needs a separate generated draft.
+`create.py` owns Pi and Codex implementation adapters. Keep generation output in local logs.
 `install.py` owns installed link discovery and ownership. `bin/ayi-tool` dispatches direct tool invocations.
 Keep shell startup outside the installer. Force never bypasses review, verification, or dirty-registry protection.
 `bootstrap.py` owns archive installation and the private Git registry.

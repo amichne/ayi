@@ -112,17 +112,58 @@ Each question and its choices come from Pi, using the request and
 all previous answers, rather than a fixed questionnaire. `modify` supplies the existing
 source and requirements and asks only about unresolved changes; the name stays fixed.
 
-Type to filter the inline choices, use arrow keys or Tab and Enter to select, or choose
-**Write a different answer** for free text. Esc or Ctrl-C cancels without registration.
-Candidates and context stay above the final input row, without an alternate screen.
-Completed steps remain in scrollback. Menus wrap at narrow widths. With `NO_COLOR`,
-`TERM=dumb`, CI, or redirected input, plain numbered choices accept a number or a custom answer.
-EOF or an empty answer cancels.
-Run `ayi`, `ayi new [name]`, or `ayi modify <name>` without a prompt to enter text with ordinary
-cursor editing. No multiline editor or persistent prompt history is provided.
-Review shows proposed source or a diff against installed source, then requests explicit
-verification and registration approvals. Diagnostics and progress go to stderr; command results
-stay on stdout. Animations run only while work is pending on an interactive terminal.
+Use arrow keys or Tab to copy a choice into the input field. Type to append or edit its text.
+Choices remain visible and never filter as you type. Select **Write your own answer** for an empty field.
+You can also type a custom answer directly. Each answer receives a checkpoint before its submission review.
+Choose **Submit answer** to send it to the design model, or **Edit answer** to change it first.
+
+Candidates and context precede the input row. The interface uses no alternate screen.
+With `NO_COLOR`, `TERM=dumb`, CI, or redirected streams, numbered choices accept a number or custom text.
+During plain-text edits, Enter keeps the current answer. A `+ text` response appends text.
+Esc, Ctrl-C, and EOF exit the flow. The last checkpoint remains available for resume.
+The interface uses a single-line editor. Sessions preserve accepted answers and pending answers outside Git.
+
+Use these controls at a question, answer review, design review, or draft review:
+
+- `/clarify <direction>` changes the direction of future questions and the proposed approach.
+- `/show-me` or `/unclear` requests examples and explanation without changing the current answer.
+- `/review` displays all submitted questions, answers, directions, and the proposed approach when available.
+- `/edit N` returns to answer N. Later answers leave this branch but remain in earlier checkpoints.
+- `/settings` selects the design model, implementation harness, and implementation model.
+- `/pause` saves the flow and exits. `/fork` saves a separate flow and prints its resume command.
+
+After all answers, Ayi displays the complete design for review. Choose **Implement** to start generation.
+After generation, choose **Review draft** to examine its file paths and request verification.
+Verification and registration still need separate approvals. Source and generation logs stay in files.
+Progress and diagnostics go to stderr. Command results stay on stdout.
+
+### Sessions and models
+
+```sh
+ayi sessions
+ayi review <session-id>
+ayi resume <session-id>
+ayi fork <session-id>
+ayi fork <session-id> --checkpoint 4
+ayi new my-command "Summarize logs" --design-model <pi-model> --implementation-harness codex --implementation-model <codex-model>
+```
+
+`ayi review` lists checkpoint numbers without a model call. `resume` continues the latest checkpoint.
+`fork` creates a separate session from the latest or selected checkpoint. It preserves the parent.
+A fork from a generated draft returns to design review and needs its own generation.
+A completed session needs an earlier checkpoint for a fork.
+Sessions belong to one registry. Resume rejects changes to the original command source or permissions.
+Only one process can resume a session at a time.
+
+Sessions, checkpoints, drafts, and generation logs use `${XDG_STATE_HOME:-$HOME/.local/state}/ayi/sessions/`.
+Session directories use mode `0700`. Checkpoints and generation logs use mode `0600`.
+An interrupted model call leaves the previous checkpoint intact. Resume can retry that call.
+A saved generated draft resumes without another implementation call.
+
+Design uses Pi. Implementation supports Pi and Codex, with a separate model choice for each phase.
+Omitted model flags use the harness default. Model IDs remain subject to the selected harness and account.
+Use `/settings` before **Implement** to change the choices. Model selection does not imply available authentication.
+Changes to settings after generation return to design review and need another explicit implementation invocation.
 
 ### Completion
 
@@ -163,14 +204,15 @@ token. Results are an array of `{value, description, kind}` candidates; `kind` i
 No candidates is a successful empty array. Invalid manifests/requests fail on stderr, never
 as candidate text. Options use separate values or long-option equals syntax, not short clusters.
 
-Pi uses its existing authentication and model settings. Interview and explanation calls
-have tools disabled. After the interview, Pi writes a draft and exits automatically;
-there is no Pi session to quit. Draft generation enables only read/write/edit file tools,
-not command execution. These tools are not a filesystem sandbox.
+Pi uses its existing authentication. Design and explanation calls disable tools.
+Pi implementation enables only its read, write, and edit tools. These tools provide no filesystem sandbox.
+Codex implementation uses `exec` with a read-only sandbox and ignores user configuration.
+It returns a structured bundle of file contents. Ayi writes that bundle into the draft directory.
+Both adapters keep their stdout and stderr in `generation.log`.
 
-Every new or modified draft must contain a valid `interface.json`; legacy commands are
-upgraded only when modified. The caller presents requirements, task, verification, and
-interface source (or diffs). Examine all four before you approve verification.
+Every new or changed draft must contain a valid `interface.json`. Legacy commands receive one during modification.
+The caller displays requirements and paths to the task, verification, and interface files.
+Examine these files before you approve verification. Ayi does not print their complete source automatically.
 The verification receives a disposable `HOME` and XDG directories without inherited credentials.
 Its first argument is the absolute task path and its second is the reviewed interface path.
 The generation prompt requires tests of every declared option/alias and choice, invalid inputs,
@@ -217,13 +259,14 @@ usage, dependencies, effects, and limitations without running the command. It ex
 Ayi registry commands, not arbitrary executables from PATH. Explanation is model analysis,
 not a claim that the tool has been tested.
 
-Drafts remain under the ignored `drafts/` directory after rejection or cancellation.
-To refine an existing draft, use Pi in that directory.
+Drafts remain in their session directory after rejection or cancellation.
+Resume the session to review the draft, or use `/clarify` to revise the design before another generation.
 
 Generated code runs with your operating-system permissions after approval.
 A disposable home separates normal configuration. It does not provide a filesystem or network sandbox.
 Interview and explanation calls disable tools, MCP, extensions, skills, and project context.
-Generation also disables these resources except its explicit file tools.
+Pi generation also disables these resources except its explicit file tools.
+Codex receives an instruction to return file contents without tools or code execution. Its sandbox enforces read-only filesystem access.
 
 ## Status
 
@@ -265,10 +308,10 @@ uv run --locked python check.py
 ```
 
 The command runs Ruff, strict Pyright, pytest, Bash syntax, and ShellCheck.
-Tests use real mise, isolated homes, and bounded substitutes for Pi.
+Tests use real mise, isolated homes, and bounded substitutes for Pi and Codex.
 Certificate tests use a local HTTPS server and disposable certificates from OpenSSL.
 They prove local control flow and data handling, not model judgment.
-Live Pi smoke runs need existing authentication and remain separate from automated tests.
+Live model runs need existing authentication and remain separate from automated tests.
 
 ## Source
 

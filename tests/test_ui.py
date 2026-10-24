@@ -17,7 +17,15 @@ import pytest
 
 @pytest.mark.parametrize(
     "width,keys,expected",
-    [(80, b"\x1b[B\x1b[B\r", "Home"), (28, b"custom\r", "custom"), (40, b"\x03", "CANCELLED")],
+    [
+        (80, b"\x1b[B\x1b[B\r", "Home"),
+        (80, b"\x1b[B and children\r", "Current directory and children"),
+        (80, b"unmatched\x1b[B\r", "Current directory"),
+        (28, b"\x1b[Aown response\r", "own response"),
+        (28, b"\x1b[A1\r", "1"),
+        (28, b"custom\r", "custom"),
+        (40, b"\x03", "CANCELLED"),
+    ],
 )
 def test_inline_terminal_selection_resize_and_cancel(
     width: int, keys: bytes, expected: str

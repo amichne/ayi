@@ -166,8 +166,14 @@ def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
     prepare(shell)
     for args, expected in (
         (["new", "--f"], ["--force"]),
+        (["res"], ["resume"]),
+        (["new", "--design"], ["--design-model"]),
+        (["new", "--implementation-harness", "c"], ["codex"]),
+        (["fork", "flow-example", "--c"], ["--checkpoint"]),
         (["modify", "--f"], ["--force"]),
         (["modify", "--force", "t"], ["two"]),
+        (["modify", "--design-model", "designer", "t"], ["two"]),
+        (["modify", "--implementation-model=builder", "t"], ["two"]),
         (["explain", "o"], ["one"]),
         (["install", "a"], ["apply"]),
         (["shell", "init", "z"], ["zsh"]),

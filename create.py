@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -12,11 +13,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 import install
 import ui
 from interface import Interface
+from sessions import Implementation
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT
@@ -355,25 +357,30 @@ def register(
                 backup.parent.rmdir()
 
 
-def main(
-    arguments: list[str],
-    *,
-    name: str | None = None,
-    original: Original | None = None,
-    force: bool = False,
-) -> int:
-    if len(arguments) != 1 or not arguments[0].strip():
-        print('ayi: usage: ayi new <name> "<description>"', file=sys.stderr)
-        return 64
-    if shutil.which("pi") is None:
-        print("ayi: missing dependency: pi", file=sys.stderr)
+class Bundle(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    proposal: str
+    requirements: str
+    task: str
+    verification: str
+    interface: str
+
+
+def new_directory(parent: Path) -> Path:
+    parent.mkdir(exist_ok=True, mode=0o700)
+    return Path(tempfile.mkdtemp(prefix="command-", dir=parent))
+
+
+def generate(request: str, directory: Path, implementation: Implementation) -> int:
+    harness = implementation.harness
+    if shutil.which(harness) is None:
+        print(f"ayi: missing dependency: {harness}", file=sys.stderr)
         return 69
-    drafts = ROOT / "drafts"
-    drafts.mkdir(exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix="command-", dir=drafts))
     ui.status(f"Proposed draft: {directory}")
-    result = subprocess.run(
-        [
+    model_args = ["--model", implementation.model] if implementation.model is not None else []
+    prompt = f"Request: {request}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}"
+    if harness == "pi":
+        arguments = [
             "pi",
             "--print",
             "--no-session",
@@ -387,16 +394,94 @@ def main(
             "read,write,edit",
             "--append-system-prompt",
             str(ROOT / "prompts/create.md"),
+            *model_args,
             "--",
-            f"Request: {arguments[0]}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}",
-        ],
-        cwd=directory,
-        stdin=subprocess.DEVNULL,
-        stdout=sys.stderr,
-        check=False,
-    )
+            prompt,
+        ]
+    else:
+        schema = directory / "output-schema.json"
+        _ = schema.write_text(json.dumps(Bundle.model_json_schema()))
+        prompt = (
+            (ROOT / "prompts/create.md").read_text()
+            + "\n"
+            + prompt
+            + "\nFor this harness, return the five file contents as JSON strings instead of writing files. "
+            "Use keys proposal, requirements, task, verification, interface. "
+            "Do not invoke tools or execute code. The caller writes and reviews these files."
+        )
+        arguments = [
+            "codex",
+            "exec",
+            "--ignore-user-config",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--color",
+            "never",
+            "--output-schema",
+            str(schema),
+            "--output-last-message",
+            str(directory / "bundle.json"),
+            *model_args,
+            "--",
+            prompt,
+        ]
+    log_path = directory / "generation.log"
+    with (
+        log_path.open("w", encoding="utf-8") as log,
+        ui.activity(f"Implementation: {harness} / {implementation.model or 'default'}"),
+    ):
+        log_path.chmod(0o600)
+        result = subprocess.run(
+            arguments, cwd=directory, stdin=subprocess.DEVNULL, stdout=log, stderr=log, check=False
+        )
     if result.returncode:
+        ui.status(f"Implementation failed: exit {result.returncode}. Details: {log_path}")
         return result.returncode
+    if harness == "codex":
+        try:
+            bundle = Bundle.model_validate_json((directory / "bundle.json").read_bytes())
+        except (OSError, ValidationError) as error:
+            ui.status(
+                f"Invalid implementation output. Details: {log_path} ({type(error).__name__})"
+            )
+            return 65
+        for filename, content in (
+            ("proposal.toml", bundle.proposal),
+            ("requirements.md", bundle.requirements),
+            ("task", bundle.task),
+            ("verify", bundle.verification),
+            ("interface.json", bundle.interface),
+        ):
+            _ = (directory / filename).write_text(content)
+    return 0
+
+
+def main(
+    arguments: list[str],
+    *,
+    name: str | None = None,
+    original: Original | None = None,
+    force: bool = False,
+) -> int:
+    if len(arguments) != 1 or not arguments[0].strip():
+        print('ayi: usage: ayi new <name> "<description>"', file=sys.stderr)
+        return 64
+    directory = new_directory(ROOT / "drafts")
+    status = generate(arguments[0], directory, Implementation())
+    if status:
+        return status
+    return finish(directory, name=name, original=original, force=force)
+
+
+def finish(
+    directory: Path,
+    *,
+    name: str | None = None,
+    original: Original | None = None,
+    force: bool = False,
+) -> int:
     draft = read_draft(directory)
     if isinstance(draft, Rejected):
         print(f"ayi: {draft.reason}. Draft: {directory}", file=sys.stderr)
@@ -405,14 +490,14 @@ def main(
         print(f"ayi: draft changed the agreed command name. Draft: {directory}", file=sys.stderr)
         return 65
     ui.status(f"Generated: {draft.name} (not yet verified or installed)")
-    for label, content, path in (
-        ("Requirements", draft.requirements, command_paths(draft.name)[2]),
-        ("Task", draft.task, command_paths(draft.name)[0]),
-        ("Verification", draft.verification, command_paths(draft.name)[1]),
-        ("Interface", draft.interface, command_paths(draft.name)[3]),
+    ui.review("Requirements", draft.requirements)
+    for label, filename, content in (
+        ("Task", "task", draft.task),
+        ("Verification", "verify", draft.verification),
+        ("Interface", "interface.json", draft.interface),
     ):
-        previous = original.files.get(path) if original is not None else None
-        ui.review(label, content, previous[0] if previous else None)
+        ui.status(f"{label}: {directory / filename} ({len(content)} bytes)")
+    ui.status("Examine the draft files before approval. Source stays in these files.")
     if not approved("Run this verification?"):
         return 1
     ui.status("Verifying reviewed draft...")
