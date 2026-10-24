@@ -161,6 +161,8 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         for name, content in (
             ("verification/greet", "#!/bin/sh\nexit 0\n"),
             ("requirements/greet.md", "Old requirements\n"),
+            ("tasks/greet.lock", "Old task lock\n"),
+            ("verification/greet.lock", "Old verification lock\n"),
             (
                 "interface/greet.json",
                 '{"schemaVersion":1,"name":"greet","summary":"Old greeting"}\n',
@@ -169,7 +171,15 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
             path = shell.root / name
             path.parent.mkdir(exist_ok=True)
             _ = path.write_text(content)
-        _ = git(shell, "add", "verification/greet", "requirements/greet.md", "interface/greet.json")
+        _ = git(
+            shell,
+            "add",
+            "verification/greet",
+            "requirements/greet.md",
+            "interface/greet.json",
+            "tasks/greet.lock",
+            "verification/greet.lock",
+        )
         _ = git(shell, "commit", "-qm", "supporting files")
     originals = {
         path: (path.read_bytes(), path.stat().st_mode)
@@ -178,6 +188,8 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
             shell.root / "verification/greet",
             shell.root / "requirements/greet.md",
             shell.root / "interface/greet.json",
+            shell.root / "tasks/greet.lock",
+            shell.root / "verification/greet.lock",
         )
         if path.exists()
     }
@@ -200,6 +212,8 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         assert (path.read_bytes(), path.stat().st_mode) == expected
     assert (shell.root / "verification/greet").exists() == has_supporting_files
     assert (shell.root / "interface/greet.json").exists() == has_supporting_files
+    assert (shell.root / "tasks/greet.lock").exists() == has_supporting_files
+    assert (shell.root / "verification/greet.lock").exists() == has_supporting_files
     assert git(shell, "ls-files", "--stage") == before_index
     hook.unlink()
     result = shell.run(
@@ -210,16 +224,24 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     assert result.returncode == 0, result.stderr + result.stdout
     assert shell.tool("greet", "Grace Hopper").stdout == "hello Grace Hopper\n"
     assert git(shell, "diff", "--cached", "--name-only") == "unrelated\n"
-    assert set(git(shell, "show", "--format=", "--name-only", "HEAD").splitlines()) == {
+    expected = {
         "tasks/greet",
         "verification/greet",
         "requirements/greet.md",
         "interface/greet.json",
     }
+    if has_supporting_files:
+        expected.update(("tasks/greet.lock", "verification/greet.lock"))
+    assert set(git(shell, "show", "--format=", "--name-only", "HEAD").splitlines()) == expected
+    assert not (shell.root / "tasks/greet.lock").exists()
+    assert not (shell.root / "verification/greet.lock").exists()
 
 
 @pytest.mark.parametrize("state", ["dirty", "staged", "concurrent", "decline"])
-@pytest.mark.parametrize("relative", ["tasks/greet", "interface/greet.json"])
+@pytest.mark.parametrize(
+    "relative",
+    ["tasks/greet", "interface/greet.json", "tasks/greet.lock", "verification/greet.lock"],
+)
 def test_modify_never_overwrites_unapproved_changes(
     shell: Shell, state: str, relative: str
 ) -> None:
@@ -230,6 +252,12 @@ def test_modify_never_overwrites_unapproved_changes(
     _ = interface.write_text('{"schemaVersion":1,"name":"greet","summary":"Old greeting"}')
     _ = git(shell, "add", "interface/greet.json")
     _ = git(shell, "commit", "-qm", "old interface")
+    if relative.endswith(".lock"):
+        lock = shell.root / relative
+        lock.parent.mkdir(exist_ok=True)
+        _ = lock.write_text("Old script lock\n")
+        _ = git(shell, "add", relative)
+        _ = git(shell, "commit", "-qm", "old script lock")
     task = shell.root / relative
     if state in ("dirty", "staged"):
         _ = task.write_text("user changes\n")

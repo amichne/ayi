@@ -237,6 +237,16 @@ It returns a structured bundle of file contents. Ayi writes that bundle into the
 Both adapters keep their stdout and stderr in `generation.log`.
 
 Every new or changed draft must contain a valid `interface.json`. Legacy commands receive one during modification.
+
+For standalone Python scripts, Ayi creates adjacent locks with `uv lock --script` before review.
+This step resolves dependencies without script execution. Dependency resolution can contact package indexes.
+Ayi examines existing locks with `uv lock --check --script`. A stale lock causes rejection without an automatic refresh.
+
+The review includes paths to `task.lock` and `verify.lock` when those scripts use uv.
+Verification uses the same lock bytes in its disposable directory.
+Registration commits each lock beside its script as `tasks/<name>.lock` or `verification/<name>.lock`.
+Modification protects both locks from concurrent changes. A replacement without uv removes the old lock in the same commit.
+
 The caller displays requirements and paths to the task, verification, and interface files.
 Examine these files before you approve verification. Ayi does not print their complete source automatically.
 The verification receives a disposable `HOME` and XDG directories without inherited credentials.
@@ -245,7 +255,7 @@ The generation prompt requires tests of every declared option/alias and choice, 
 output modes, and examples using disposable fixtures. These behavior-specific assertions are
 generated code: review them; schema validation alone cannot prove a separately implemented parser.
 Bash tasks also pass Bash syntax and ShellCheck checks.
-Changed task, verifier, or manifest inputs cause rejection. Independently of generated assertions,
+Changed task, verifier, manifest, or lockfile inputs cause rejection. Independently of generated assertions,
 Ayi checks `--help` and `-h` for nonempty stdout, success, and every declared option spelling,
 and requires a nonzero exit for an unknown option before allowing registration.
 
