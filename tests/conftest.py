@@ -60,6 +60,7 @@ def shell(tmp_path: Path) -> Shell:
         "sessions.py",
         "create.py",
         "install.py",
+        "bootstrap.py",
     ):
         source = SOURCE / name
         if source.exists():
