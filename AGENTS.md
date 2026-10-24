@@ -2,6 +2,10 @@
 
 `mise.toml` owns task discovery. `tasks/` contains ordinary executables.
 `create.py` owns draft review, verification, and local Git registration.
+
+It creates uv script locks before review and preserves them through verification and registration.
+Keep each generated uv script beside its `.lock` file under `tasks/` or `verification/`.
+
 The registry uses this checkout's Git index. Keep dotfiles and HOME Git indexes separate.
 `factory.py` owns the model-driven tool interview and read-only explanations.
 `sessions.py` owns interview values and local checkpoints under XDG state.

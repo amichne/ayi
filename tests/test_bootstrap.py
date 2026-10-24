@@ -170,8 +170,11 @@ def test_archive_installs_a_git_registry_and_preserves_registered_commands(shell
     interface_source = b'{"schemaVersion":1,"name":"added","summary":"Added command"}'
     script = (
         "import create\n"
+        "from pathlib import Path\n"
         f"draft = create.Draft('added', {task_source!r}, b'#!/bin/bash\\nexit 0\\n', b'Added command\\n', {interface_source!r})\n"
-        "verified = create.verify(draft)\n"
+        "prepared = create.prepare_script_locks(draft, Path.cwd())\n"
+        "assert not isinstance(prepared, (create.PreparationFailed, create.Rejected))\n"
+        "verified = create.verify(prepared)\n"
         "assert not isinstance(verified, create.VerificationFailed)\n"
         "raise SystemExit(create.register(verified))\n"
     )

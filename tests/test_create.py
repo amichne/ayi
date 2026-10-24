@@ -430,3 +430,133 @@ for args in (["--style", "invalid", "Ada"], ["--style"], [], ["--unknown"]):
     assert candidates.returncode == 0, candidates.stderr
     assert [row["value"] for row in json.loads(candidates.stdout)] == ["friendly", "formal"]
     assert json.loads((shell.root / "interface/greet.json").read_text()) == document
+
+
+UV_HEADER = """#!/usr/bin/env -S uv run --locked --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# [tool.uv]
+# no-build = true
+# ///
+"""
+
+
+def prepare_uv(shell: Shell, *, verifier_uv: bool = False, patch: str = "") -> None:
+    prepare(shell)
+    task = (
+        UV_HEADER
+        + """#MISE description="Print a greeting"
+import argparse
+parser = argparse.ArgumentParser(prog="greet")
+parser.add_argument("NAME")
+args = parser.parse_args()
+print("hello " + args.NAME)
+"""
+    )
+    verification = (
+        (UV_HEADER if verifier_uv else f"#!{sys.executable}\n")
+        + """import subprocess
+import sys
+result = subprocess.run([sys.argv[1], "Ada Lovelace; $HOME"], capture_output=True, text=True)
+assert result.returncode == 0, result.stderr
+assert result.stdout == "hello Ada Lovelace; $HOME\\n"
+assert subprocess.run([sys.argv[1]], capture_output=True).returncode != 0
+"""
+    )
+    pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+    with pi.open("a") as script:
+        _ = script.write(
+            f"Path('task').write_text({task!r})\n"
+            f"Path('verify').write_text({verification!r})\n" + patch
+        )
+
+
+@pytest.mark.parametrize("verifier_uv", [False, True])
+def test_locked_uv_draft_survives_verification_registration_and_clone(
+    shell: Shell, verifier_uv: bool
+) -> None:
+    prepare_uv(shell, verifier_uv=verifier_uv)
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 0, result.stderr
+    installed = shell.tool("greet", "Installed name")
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stdout == "hello Installed name\n"
+    assert "Task lock:" in result.stderr
+    draft = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/sessions/*/drafts/*"))
+    assert (shell.root / "tasks/greet.lock").read_bytes() == (draft / "task.lock").read_bytes()
+    assert (shell.root / "verification/greet.lock").exists() == verifier_uv
+    if verifier_uv:
+        assert "Verification lock:" in result.stderr
+        assert (shell.root / "verification/greet.lock").read_bytes() == (
+            draft / "verify.lock"
+        ).read_bytes()
+    clone = shell.cwd / "locked clone with spaces"
+    _ = subprocess.run(
+        ["git", "clone", "-q", str(shell.root), str(clone)], env=shell.env, check=True
+    )
+    execution = subprocess.run(
+        [str(clone / "tasks/greet"), "Grace Hopper; $HOME"],
+        cwd=shell.cwd,
+        env=dict(shell.env, UV_OFFLINE="1", UV_PYTHON=sys.executable),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert execution.returncode == 0, execution.stderr
+    assert execution.stdout == "hello Grace Hopper; $HOME\n"
+
+
+def test_uv_lock_preparation_never_executes_unapproved_source(shell: Shell) -> None:
+    marker = shell.cwd / "unapproved"
+    patch = f"with Path('task').open('a') as task: task.write({f'from pathlib import Path; Path({str(marker)!r}).touch()'!r})\n"
+    prepare_uv(shell, verifier_uv=True, patch=patch)
+    result = new_command(shell, "Greet", input_text="n\n")
+    assert "Task lock:" in result.stderr
+    assert "Verification lock:" in result.stderr
+    assert not marker.exists()
+    assert not (shell.root / "tasks/greet").exists()
+
+
+@pytest.mark.parametrize("filename", ["task.lock", "verify.lock"])
+@pytest.mark.parametrize("change", ["rewrite", "delete", "symlink"])
+def test_mutated_script_lock_cannot_register(shell: Shell, filename: str, change: str) -> None:
+    mutation = {
+        "rewrite": f"Path({filename!r}).write_text('changed')\n",
+        "delete": f"Path({filename!r}).unlink()\n",
+        "symlink": f"Path({filename!r}).unlink()\nPath({filename!r}).symlink_to('interface.json')\n",
+    }[change]
+    verification = f"#!{sys.executable}\nfrom pathlib import Path\n" + mutation
+    if filename == "verify.lock":
+        verification = UV_HEADER + verification.split("\n", 1)[1]
+    prepare_uv(shell, patch=f"Path('verify').write_text({verification!r})\n")
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode == 65, result.stderr
+    assert "verification changed its inputs" in result.stderr
+    assert not (shell.root / "tasks/greet").exists()
+
+
+def test_resume_preserves_reviewed_script_locks(shell: Shell) -> None:
+    prepare_uv(shell, verifier_uv=True)
+    declined = new_command(shell, "Greet", input_text="n\n")
+    assert declined.returncode != 0
+    session = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/sessions/*"))
+    draft = next((session / "drafts").iterdir())
+    locks = {name: (draft / name).read_bytes() for name in ("task.lock", "verify.lock")}
+    result = shell.run("resume", session.name, input_text="/draft\ny\ny\n")
+    assert result.returncode == 0, result.stderr
+    assert {name: (draft / name).read_bytes() for name in locks} == locks
+
+
+@pytest.mark.parametrize("state", ["stale", "symlink", "invalid-metadata"])
+def test_invalid_script_lock_cannot_reach_verification(shell: Shell, state: str) -> None:
+    patch = {
+        "stale": "Path('task.lock').write_text('version = 1\\nrevision = 3\\nrequires-python = \">=3.13\"\\n')\n",
+        "symlink": "Path('task.lock').symlink_to('requirements.md')\n",
+        "invalid-metadata": "Path('task').write_text(Path('task').read_text().replace('dependencies = []', 'dependencies = nope'))\n",
+    }[state]
+    prepare_uv(shell, patch=patch)
+    result = new_command(shell, "Greet", input_text="y\ny\n")
+    assert result.returncode != 0
+    assert "Run this verification?" not in result.stderr
+    assert not (shell.root / "tasks/greet").exists()

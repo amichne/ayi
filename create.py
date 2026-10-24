@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -45,9 +46,36 @@ class Draft:
     interface: bytes
 
 
+class ScriptName(StrEnum):
+    TASK = "task"
+    VERIFICATION = "verify"
+
+
+@dataclass(frozen=True)
+class ScriptLock:
+    script: ScriptName
+    content: bytes
+
+    @property
+    def filename(self) -> str:
+        return f"{self.script}.lock"
+
+
+@dataclass(frozen=True)
+class _PreparedDraft:
+    draft: Draft
+    locks: tuple[ScriptLock, ...]
+
+
+@dataclass(frozen=True)
+class PreparationFailed:
+    script: ScriptName
+    status: int
+
+
 @dataclass(frozen=True)
 class _VerifiedDraft:
-    draft: Draft
+    prepared: _PreparedDraft
 
 
 @dataclass(frozen=True)
@@ -61,12 +89,14 @@ class Original:
     files: dict[Path, tuple[bytes, int] | None]
 
 
-def command_paths(name: str) -> tuple[Path, Path, Path, Path]:
+def command_paths(name: str) -> tuple[Path, Path, Path, Path, Path, Path]:
     return (
         ROOT / "tasks" / name,
         ROOT / "verification" / name,
         ROOT / "requirements" / f"{name}.md",
         ROOT / "interface" / f"{name}.json",
+        ROOT / "tasks" / f"{name}.lock",
+        ROOT / "verification" / f"{name}.lock",
     )
 
 
@@ -155,7 +185,92 @@ def approved(question: str) -> bool:
     return ui.approved(question)
 
 
-def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
+def isolated_environment(home: Path) -> dict[str, str]:
+    # PATH selects installed executables. No inherited tokens or host HOME.
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local/share"),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_STATE_HOME": str(home / ".local/state"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "UV_NO_BUILD": "1",
+        "UV_SYSTEM_CERTS": "1",
+        "UV_NO_CONFIG": "1",
+    }
+
+
+def prepare_script_locks(
+    draft: Draft, directory: Path
+) -> _PreparedDraft | PreparationFailed | Rejected:
+    locks: list[ScriptLock] = []
+    with tempfile.TemporaryDirectory(prefix="ayi-lock-") as temporary:
+        workspace = Path(temporary)
+        home = workspace / "home"
+        home.mkdir()
+        for name, source in (
+            (ScriptName.TASK, draft.task),
+            (ScriptName.VERIFICATION, draft.verification),
+        ):
+            try:
+                header = shlex.split(source.decode().splitlines()[0][2:])
+                uses_uv = any(Path(word).name == "uv" for word in header)
+                has_metadata = b"# /// script" in source.splitlines()
+                if not uses_uv and not has_metadata:
+                    continue
+                if (
+                    not uses_uv
+                    or not {"run", "--locked", "--script"}.issubset(header)
+                    or not has_metadata
+                ):
+                    return Rejected(Rejection.INVALID)
+                script = workspace / name
+                _ = script.write_bytes(source)
+                destination = directory / f"{name}.lock"
+                if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+                    return Rejected(Rejection.INVALID)
+                existing = destination.read_bytes() if destination.exists() else None
+                lock_path = workspace / destination.name
+                if existing is not None:
+                    _ = lock_path.write_bytes(existing)
+                ui.status(f"Prepare script lock: {name}")
+                result = subprocess.run(
+                    [
+                        "uv",
+                        "lock",
+                        "--script",
+                        str(script),
+                        "--no-build",
+                        "--system-certs",
+                        "--no-config",
+                        *(["--check"] if existing is not None else []),
+                    ],
+                    cwd=workspace,
+                    env=isolated_environment(home),
+                    stdout=sys.stderr,
+                    check=False,
+                )
+                if result.returncode:
+                    return PreparationFailed(name, result.returncode)
+                content = lock_path.read_bytes()
+                _ = content.decode()
+                if existing is None:
+                    with destination.open("xb") as output:
+                        _ = output.write(content)
+                elif destination.is_symlink() or destination.read_bytes() != existing:
+                    return Rejected(Rejection.CHANGED)
+                if (directory / name).is_symlink() or (directory / name).read_bytes() != source:
+                    return Rejected(Rejection.CHANGED)
+                locks.append(ScriptLock(name, content))
+            except (OSError, UnicodeError, ValueError):
+                return Rejected(Rejection.INVALID)
+    return _PreparedDraft(draft, tuple(locks))
+
+
+def verify(prepared: _PreparedDraft) -> _VerifiedDraft | VerificationFailed:
+    draft = prepared.draft
     with tempfile.TemporaryDirectory(prefix="ayi-verify-") as temporary:
         directory = Path(temporary)
         task = directory / "task"
@@ -165,6 +280,7 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
             task: draft.task,
             verification: draft.verification,
             interface_path: draft.interface,
+            **{directory / lock.filename: lock.content for lock in prepared.locks},
         }
         for path, content in inputs.items():
             _ = path.write_bytes(content)
@@ -172,17 +288,7 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
         verification.chmod(0o755)
         home = directory / "home"
         home.mkdir()
-        # PATH selects installed executables. No inherited tokens or host HOME.
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": str(home),
-            "XDG_CONFIG_HOME": str(home / ".config"),
-            "XDG_DATA_HOME": str(home / ".local/share"),
-            "XDG_CACHE_HOME": str(home / ".cache"),
-            "XDG_STATE_HOME": str(home / ".local/state"),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        }
+        env = isolated_environment(home)
         if b"bash" in draft.task.splitlines()[0]:
             for args in (["bash", "-n", str(task)], ["shellcheck", "-S", "warning", str(task)]):
                 result = subprocess.run(
@@ -245,7 +351,7 @@ def verify(draft: Draft) -> _VerifiedDraft | VerificationFailed:
                         file=sys.stderr,
                     )
                     return VerificationFailed(65)
-        return _VerifiedDraft(draft)
+        return _VerifiedDraft(prepared)
 
 
 def git_arguments(*arguments: str) -> list[str]:
@@ -255,7 +361,7 @@ def git_arguments(*arguments: str) -> list[str]:
 def register(
     verified: _VerifiedDraft, original: Original | None = None, *, force: bool = False
 ) -> int:
-    draft = verified.draft
+    draft = verified.prepared.draft
     link = install.command_link(draft.name)
     if link.state == install.LinkState.CONFLICT and (
         not force or not (link.destination.is_file() or link.destination.is_symlink())
@@ -265,22 +371,30 @@ def register(
             file=sys.stderr,
         )
         return 65
+    destinations = command_paths(draft.name)
     files = dict(
         zip(
-            command_paths(draft.name),
+            destinations[:4],
             (draft.task, draft.verification, draft.requirements, draft.interface),
             strict=True,
         )
     )
+    for lock in verified.prepared.locks:
+        match lock.script:
+            case ScriptName.TASK:
+                destination = destinations[4]
+            case ScriptName.VERIFICATION:
+                destination = destinations[5]
+        files[destination] = lock.content
     if original is not None and (
         draft.name != original.name or read_original(original.name) != original
     ):
         print("ayi: command changed during modification; no files replaced", file=sys.stderr)
         return 75
-    if original is None and any(path.exists() or path.is_symlink() for path in files):
+    if original is None and any(path.exists() or path.is_symlink() for path in destinations):
         print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
-    paths = [str(path.relative_to(REPO)) for path in files]
+    paths = [str(path.relative_to(REPO)) for path in destinations]
     tracked = subprocess.run(
         git_arguments("ls-files", "--cached", "--with-tree=HEAD", "--", *paths),
         stdout=subprocess.PIPE,
@@ -291,17 +405,26 @@ def register(
     if original is None and tracked.stdout:
         print(f"ayi: {Rejection.EXISTS}", file=sys.stderr)
         return 65
+    removed = [
+        path
+        for path in destinations
+        if path not in files and original is not None and original.files[path] is not None
+    ]
+    paths = [str(path.relative_to(REPO)) for path in (*files, *removed)]
     written: list[Path] = []
     committed = False
     linked = False
     backup: Path | None = None
     try:
+        for path in removed:
+            path.unlink()
+            written.append(path)
         for path, content in files.items():
             path.parent.mkdir(exist_ok=True)
             with path.open("wb" if original is not None else "xb") as output:
                 written.append(path)
                 _ = output.write(content)
-            path.chmod(0o644 if path.suffix in (".md", ".json") else 0o755)
+            path.chmod(0o644 if path.suffix in (".md", ".json", ".lock") else 0o755)
         if link.state != install.LinkState.OWNED:
             link.destination.parent.mkdir(parents=True, exist_ok=True)
             if link.state == install.LinkState.CONFLICT:
@@ -489,6 +612,16 @@ def finish(
     if name is not None and draft.name != name:
         print(f"ayi: draft changed the agreed command name. Draft: {directory}", file=sys.stderr)
         return 65
+    prepared = prepare_script_locks(draft, directory)
+    if isinstance(prepared, Rejected):
+        print(f"ayi: {prepared.reason}. Draft: {directory}", file=sys.stderr)
+        return 65
+    if isinstance(prepared, PreparationFailed):
+        print(
+            f"ayi: script lock failed: {prepared.script}, exit {prepared.status}. Draft: {directory}",
+            file=sys.stderr,
+        )
+        return prepared.status
     ui.status(f"Generated: {draft.name} (not yet verified or installed)")
     ui.review("Requirements", draft.requirements)
     for label, filename, content in (
@@ -497,11 +630,14 @@ def finish(
         ("Interface", "interface.json", draft.interface),
     ):
         ui.status(f"{label}: {directory / filename} ({len(content)} bytes)")
+    for lock in prepared.locks:
+        label = "Task lock" if lock.script == ScriptName.TASK else "Verification lock"
+        ui.status(f"{label}: {directory / lock.filename} ({len(lock.content)} bytes)")
     ui.status("Examine the draft files before approval. Source stays in these files.")
     if not approved("Run this verification?"):
         return 1
     ui.status("Verifying reviewed draft...")
-    verified = verify(draft)
+    verified = verify(prepared)
     if isinstance(verified, VerificationFailed):
         print(
             f"ayi: verification failed: exit {verified.status}. Draft: {directory}", file=sys.stderr
