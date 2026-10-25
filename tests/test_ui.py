@@ -96,8 +96,12 @@ class Terminal:
         self.process.send_signal(signal.SIGWINCH)
 
     def assert_input_last(self, text: str = "") -> None:
+        # PTY reads can split a redraw before its cursor restoration arrives.
         self.wait_for(
-            lambda: "ayi ❯ " in self.display and text in self.screen.display[self.screen.cursor.y]
+            lambda: "ayi ❯ " in self.screen.display[self.screen.cursor.y]
+            and text in self.screen.display[self.screen.cursor.y]
+            and all(not line.strip() for line in self.screen.display[self.screen.cursor.y + 1 :])
+            and not self.screen.cursor.hidden
         )
         row = self.screen.cursor.y
         assert "ayi ❯ " in self.screen.display[row], self.display
