@@ -53,6 +53,7 @@ def shell(tmp_path: Path) -> Shell:
         "uv.lock",
         ".python-version",
         "ui.py",
+        "cli.py",
         "interface.py",
         "completion.py",
         "shell.py",

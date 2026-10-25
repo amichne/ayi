@@ -87,7 +87,7 @@ def test_plain_input_has_no_terminal_controls(mode: dict[str, str], tmp_path: Pa
         [
             sys.executable,
             "-c",
-            "import ui; print('ANSWER=' + ui.entry('Choose', ['First', 'Second']))",
+            "import ui; print('CAN_PROMPT=' + str(ui.can_prompt())); print('ANSWER=' + ui.entry('Choose', ['First', 'Second']))",
         ],
         env={"HOME": str(tmp_path), "TERM": "xterm-256color", **mode},
         stdin=slave,
@@ -104,6 +104,7 @@ def test_plain_input_has_no_terminal_controls(mode: dict[str, str], tmp_path: Pa
         if process.stdout is not None:
             output += process.stdout.read()
         assert b"ANSWER=Second" in output
+        assert f"CAN_PROMPT={bool(mode) and 'CI' not in mode}".encode() in output
         assert b"Choose" in output
         assert b"\x1b" not in output
     finally:

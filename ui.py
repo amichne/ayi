@@ -36,19 +36,21 @@ STYLE = Style.from_dict(
 )
 
 
+def can_prompt() -> bool:
+    return (
+        sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and sys.stderr.isatty()
+        and not os.environ.get("CI")
+    )
+
+
 def interactive() -> bool:
     try:
         _ = "┌─│└❯◆↑↓↵".encode(sys.stderr.encoding or "ascii")
     except UnicodeError:
         return False
-    return (
-        sys.stdin.isatty()
-        and sys.stdout.isatty()
-        and sys.stderr.isatty()
-        and os.environ.get("TERM") != "dumb"
-        and "NO_COLOR" not in os.environ
-        and not os.environ.get("CI")
-    )
+    return can_prompt() and os.environ.get("TERM") != "dumb" and "NO_COLOR" not in os.environ
 
 
 def console() -> Console:

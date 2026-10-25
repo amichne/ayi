@@ -16,6 +16,8 @@ ayi_root="$(cd "$(dirname "$ayi_source")/.." && pwd -P)"
 ayi_task="$ayi_root/tasks/$ayi_name"
 [ -x "$ayi_task" ] || { printf 'ayi: unavailable tool: %s\n' "$ayi_name" >&2; exit 69; }
 export AYI_CALLER_DIR="$PWD"
+export AYI_RUNTIME_ROOT="$ayi_root"
+export AYI_INTERFACE_PATH="$ayi_root/interface/$ayi_name.json"
 
 if [ "$#" -eq 1 ] && { [ "$1" = --help ] || [ "$1" = -h ]; }; then
     ayi_status=0

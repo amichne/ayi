@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "runtime": "python",
+  "name": "brief",
+  "summary": "Prepare a brief or ask Pi to write it",
+  "options": [
+    {"names": ["--text", "-t"], "description": "Text for the brief", "required": true, "prompt": "Text for the brief", "value": {"name": "TEXT", "completion": {"kind": "none"}}},
+    {"names": ["--style", "-s"], "description": "Brief style", "default": "short", "env": "BRIEF_STYLE", "value": {"name": "STYLE", "completion": {"kind": "choices", "values": ["short", "detailed"]}}},
+    {"names": ["--model"], "description": "Pi model", "value": {"name": "MODEL", "completion": {"kind": "none"}}},
+    {"names": ["--ask"], "description": "Send the text to Pi with tools disabled"}
+  ],
+  "examples": ["brief --text 'Release notes' --json", "brief --text 'Release notes' --style detailed --ask"],
+  "output": ["text", "json"]
+}
