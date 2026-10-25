@@ -4,29 +4,110 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 import install
-from interface import Closed, Completion, Interface, Option, Text
+from interface import Closed, Completion, Interface, Text, UsageError, parser
 
 ROOT = Path(__file__).resolve().parent
+MAX_CANDIDATES = 1000
+PROVIDER_TIMEOUT = 0.15
 
 
 class Request(Closed):
     command: str
-    args: list[str]
+    args: list[str] = Field(max_length=1024)
     cursor: int = Field(ge=0)
+    offset: int | None = Field(default=None, ge=0)
     cwd: str
+
+    @model_validator(mode="after")
+    def cursor_bounds(self) -> Request:
+        if self.cursor > len(self.args):
+            raise ValueError("cursor must identify a token or the trailing empty token")
+        token = self.args[self.cursor] if self.cursor < len(self.args) else ""
+        if self.offset is not None and self.offset > len(token):
+            raise ValueError("offset must be within the current token")
+        return self
 
 
 class Candidate(Closed):
     value: Text
     description: str = ""
     kind: Literal["value", "file", "directory"] = "value"
+
+
+class ProviderUnavailable(StrEnum):
+    PROCESS = "cannot inspect local references"
+    TIMEOUT = "local reference inspection timed out"
+    REPOSITORY = "local references unavailable"
+    ENCODING = "local references are not UTF-8"
+
+
+@dataclass(frozen=True)
+class ProviderValues:
+    values: tuple[str, ...]
+
+
+def git_branches(cwd: str, prefix: str = "") -> ProviderValues | ProviderUnavailable:
+    """The only provider effect: bounded local ref inspection, never a task.
+
+    Ignore ambient repository selectors and configuration. Git's fixed local
+    plumbing command neither invokes hooks nor contacts configured remotes.
+    """
+    if any(char in prefix for char in "*?[\\"):
+        return ProviderValues(())
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_") and key not in ("PAGER", "GIT_PAGER")
+    }
+    env.update(
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_OPTIONAL_LOCKS="0",
+        GIT_TERMINAL_PROMPT="0",
+        LC_ALL="C",
+    )
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-pager",
+                "for-each-ref",
+                "--format=%(refname:strip=2)",
+                "--sort=refname",
+                f"--count={MAX_CANDIDATES}",
+                "refs/heads/" + prefix + ("*" if prefix else ""),
+                *(["refs/heads/" + prefix + "*/**"] if prefix else []),
+            ],
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=PROVIDER_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ProviderUnavailable.TIMEOUT
+    except OSError:
+        return ProviderUnavailable.PROCESS
+    if result.returncode:
+        return ProviderUnavailable.REPOSITORY
+    try:
+        lines = result.stdout.decode("utf-8").splitlines()
+    except UnicodeError:
+        return ProviderUnavailable.ENCODING
+    return ProviderValues(
+        tuple(sorted({value for value in lines if clean(value) and value.startswith(prefix)}))
+    )
 
 
 def read_interface(name: str) -> Interface | None:
@@ -64,6 +145,13 @@ def values(completion: Completion, prefix: str, cwd: str) -> list[Candidate]:
             return [
                 Candidate(value=value) for value in completion.values if value.startswith(prefix)
             ]
+        case "provider":
+            match completion.id:
+                case "git.branches":
+                    source = git_branches(cwd, prefix)
+            if isinstance(source, ProviderUnavailable):
+                return []
+            return [Candidate(value=value) for value in source.values if value.startswith(prefix)]
         case "file" | "directory":
             if prefix == "~":
                 return [Candidate(value="~/", kind="directory")]
@@ -98,11 +186,8 @@ def clean(value: str) -> bool:
 
 
 def resolve(request: Request) -> list[Candidate]:
-    if request.cursor > len(request.args):
-        raise ValueError(
-            "cursor is a zero-based token index, including an optional trailing empty token"
-        )
-    prefix = request.args[request.cursor] if request.cursor < len(request.args) else ""
+    token = request.args[request.cursor] if request.cursor < len(request.args) else ""
+    prefix = token[: request.offset] if request.offset is not None else token
     before = request.args[: request.cursor]
     if request.command == "ayi":
         if not before:
@@ -180,37 +265,60 @@ def resolve(request: Request) -> list[Candidate]:
         for option in interface.options
         for name in option.names + (option.negative_names if interface.runtime == "python" else [])
     }
-    pending: Option | None = None
-    used: set[str] = set()
-    positional = 0
-    literal = False
-    for word in before:
-        if pending is not None:
-            pending = None
-        elif word == "--" and not literal:
-            literal = True
-        elif not literal and word.split("=", 1)[0] in options:
-            option = options[word.split("=", 1)[0]]
-            used.update(
-                option.names + (option.negative_names if interface.runtime == "python" else [])
-                if not option.repeatable
-                else []
-            )
-            if option.value is not None and "=" not in word:
-                pending = option
-        elif literal or not word.startswith("-"):
-            positional += 1
-    if pending is not None:
-        return values(pending.value.completion, prefix, request.cwd) if pending.value else []
+    marker = "\x00ayi-cursor"
+    while marker in before:
+        marker += "-"
+    grammar = parser(interface, cursor=marker)
+    try:
+        namespace, extra = grammar.parse_known_args([*before, marker])
+    except UsageError:
+        return []
+    if extra not in ([], [marker]):
+        return []
+    parsed: dict[str, object] = vars(namespace)
+    if parsed.get("help"):
+        return []
+    literal = "--" in before
+
+    def at_cursor(value: object) -> bool:
+        return value == marker or (isinstance(value, list) and marker in value)
+
+    def accepted(candidates: list[Candidate]) -> list[Candidate]:
+        result: list[Candidate] = []
+        for candidate in candidates[:MAX_CANDIDATES]:
+            try:
+                _, extra = grammar.parse_known_args([*before, candidate.value, marker])
+            except UsageError:
+                continue
+            if extra in ([], [marker]):
+                result.append(candidate)
+        return result
+
+    for option in interface.options:
+        if option.value and at_cursor(parsed.get(option.key)):
+            return accepted(values(option.value.completion, prefix, request.cwd))
     if not literal and "=" in prefix:
         name, fragment = prefix.split("=", 1)
         option = options.get(name)
         if option and option.value:
-            return [
-                candidate.model_copy(update={"value": name + "=" + candidate.value})
-                for candidate in values(option.value.completion, fragment, request.cwd)
-            ]
+            return accepted(
+                [
+                    Candidate(value=name + "=" + candidate.value, kind=candidate.kind)
+                    for candidate in values(option.value.completion, fragment, request.cwd)
+                    if clean(name + "=" + candidate.value)
+                ]
+            )
         return []
+    if not literal and prefix.startswith("-") and not prefix.startswith("--") and len(prefix) > 2:
+        option = options.get(prefix[:2])
+        if option and option.value:
+            return accepted(
+                [
+                    Candidate(value=prefix[:2] + candidate.value, kind=candidate.kind)
+                    for candidate in values(option.value.completion, prefix[2:], request.cwd)
+                    if clean(prefix[:2] + candidate.value)
+                ]
+            )
     result: list[Candidate] = []
     if not literal:
         if interface.runtime == "python":
@@ -225,7 +333,7 @@ def resolve(request: Request) -> list[Candidate]:
         result.extend(
             Candidate(value=name, description=option.description)
             for name, option in options.items()
-            if name.startswith(prefix) and name not in used
+            if name.startswith(prefix) and (option.repeatable or option.key not in parsed)
         )
         result.extend(
             Candidate(value=name, description="Show help")
@@ -233,11 +341,11 @@ def resolve(request: Request) -> list[Candidate]:
             if name not in options and name.startswith(prefix)
         )
     if literal or not prefix.startswith("-"):
-        if positional < len(interface.positionals):
-            result.extend(values(interface.positionals[positional].completion, prefix, request.cwd))
-        elif interface.positionals and interface.positionals[-1].repeatable:
-            result.extend(values(interface.positionals[-1].completion, prefix, request.cwd))
-    return result
+        for positional in interface.positionals:
+            if at_cursor(parsed.get(positional.name)):
+                result.extend(values(positional.completion, prefix, request.cwd))
+                break
+    return accepted(result)
 
 
 def main(arguments: list[str]) -> int:

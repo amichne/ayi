@@ -150,13 +150,21 @@ def test_invalid_explicit_name_is_rejected_before_model(shell: Shell, name: str)
     assert not (home / "calls").exists()
 
 
+@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("has_supporting_files", [False, True])
 def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     shell: Shell,
     has_supporting_files: bool,
+    version: int,
 ) -> None:
     _ = prepare(shell)
     seed_command(shell)
+    if version == 2:
+        pi = Path(shell.env["PATH"].split(":")[0]) / "pi"
+        with pi.open("a") as script:
+            _ = script.write(
+                "\nif mode == 'create':\n document = json.loads(Path('interface.json').read_text())\n document['schemaVersion'] = 2\n document['positionals'][0]['completion'] = dict(kind='provider', id='git.branches')\n Path('interface.json').write_text(json.dumps(document))\n"
+            )
     if has_supporting_files:
         for name, content in (
             ("verification/greet", "#!/bin/sh\nexit 0\n"),
@@ -235,6 +243,7 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     assert set(git(shell, "show", "--format=", "--name-only", "HEAD").splitlines()) == expected
     assert not (shell.root / "tasks/greet.lock").exists()
     assert not (shell.root / "verification/greet.lock").exists()
+    assert json.loads((shell.root / "interface/greet.json").read_text())["schemaVersion"] == version
 
 
 @pytest.mark.parametrize("state", ["dirty", "staged", "concurrent", "decline"])

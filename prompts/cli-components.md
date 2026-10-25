@@ -2,7 +2,8 @@
 
 Use `runtime: "python"` in `interface.json` for a new Python tool.
 Use `output: ["text", "json"]` with that runtime.
-Keep the existing version-1 interface fields for completion and examples.
+Use `schemaVersion: 1` for existing static completion forms.
+Use `schemaVersion: 2` when declaring a registered dynamic provider.
 The shared runtime also supplies `--help`, `-h`, `--json`, and `--no-input`.
 Do not declare these reserved options in the manifest.
 
@@ -68,6 +69,17 @@ Repeated options accept argument values only.
 Do not declare defaults, environment variables, prompts, or required status for repeated options.
 Prompted choices use the same values as completion.
 The runtime rejects an answer outside those choices.
+
+Completion kinds are `none`, `choices`, `file`, and `directory` in either version.
+Version 2 additionally supports `{"kind": "provider", "id": "git.branches"}`.
+This provider suggests local branch names from the caller's repository.
+It is a bounded, read-only hint, not validation that a branch exists at execution time.
+Do not use it for integer inputs. It does not supply interactive picker choices.
+No other provider IDs, executable fields, imports, URLs, or shell commands are supported.
+To extend a version-1 command with this provider, propose `schemaVersion: 2`
+and the provider declaration together through `ayi modify`.
+Review and verify the complete changed bundle before registration.
+Ordinary execution never upgrades manifests automatically.
 
 Settings use `$XDG_CONFIG_HOME/ayi-tools/<name>.toml` or `~/.config/ayi-tools/<name>.toml`.
 The file accepts only `[defaults]` and declared, nonrepeated option keys.

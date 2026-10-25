@@ -298,6 +298,9 @@ def test_alternate_mise_metadata_cannot_bypass_draft_contract(shell: Shell, mark
         None,
         '{"schemaVersion":1,"name":"other","summary":"Wrong name"}',
         '{"schemaVersion":1,"name":"greet","summary":"Bad provider","positionals":[{"name":"input","completion":{"kind":"exec","command":"pi"}}]}',
+        '{"schemaVersion":1,"name":"greet","summary":"Unversioned provider","positionals":[{"name":"input","completion":{"kind":"provider","id":"git.branches"}}]}',
+        '{"schemaVersion":2,"name":"greet","summary":"Executable provider","positionals":[{"name":"input","completion":{"kind":"provider","id":"git.branches","command":"pi"}}]}',
+        '{"schemaVersion":2,"name":"greet","summary":"Unknown provider","positionals":[{"name":"input","completion":{"kind":"provider","id":"network.branches"}}]}',
     ],
 )
 def test_missing_or_invalid_manifest_cannot_register(shell: Shell, replacement: str | None) -> None:
@@ -355,7 +358,8 @@ def test_independent_interface_checks_reject_parser_drift(shell: Shell, failure:
     assert not (shell.root / "interface/greet.json").exists()
 
 
-def test_generated_options_verify_install_and_complete_together(shell: Shell) -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_generated_options_verify_install_and_complete_together(shell: Shell, version: int) -> None:
     prepare(shell)
     task = """#!/bin/bash
 #MISE description="Greet with a style"
@@ -379,10 +383,18 @@ case "$style" in
 esac
 """
     document = {
-        "schemaVersion": 1,
+        "schemaVersion": version,
         "name": "greet",
         "summary": "Greet with a style",
-        "positionals": [{"name": "NAME", "required": True, "completion": {"kind": "none"}}],
+        "positionals": [
+            {
+                "name": "NAME",
+                "required": True,
+                "completion": {"kind": "provider", "id": "git.branches"}
+                if version == 2
+                else {"kind": "none"},
+            }
+        ],
         "options": [
             {
                 "names": ["--style", "-s"],
@@ -560,3 +572,88 @@ def test_invalid_script_lock_cannot_reach_verification(shell: Shell, state: str)
     assert result.returncode != 0
     assert "Run this verification?" not in result.stderr
     assert not (shell.root / "tasks/greet").exists()
+
+
+@pytest.mark.parametrize("failure", ["write", "interrupt", "stage", "link"])
+def test_registration_failure_restores_owned_unit_and_unrelated_state(
+    shell: Shell, failure: str
+) -> None:
+    prepare(shell)
+    assert new_command(shell, "Greet", input_text="n\n").returncode == 1
+    draft = next(Path(shell.env["XDG_STATE_HOME"]).glob("ayi/sessions/*/drafts/*"))
+    # Exercise the new version through the same existing transaction owner.
+    document = json.loads((draft / "interface.json").read_text())
+    document["schemaVersion"] = 2
+    document["positionals"][0]["completion"] = {"kind": "provider", "id": "git.branches"}
+    _ = (draft / "interface.json").write_text(json.dumps(document))
+    destination = Path(shell.env["HOME"]) / ".local/bin/greet"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _ = destination.write_text("user-owned executable\n")
+    destination.chmod(0o751)
+    _ = (shell.root / "unrelated").write_text("staged user work\n")
+    base = ["/usr/bin/git", "-C", str(shell.root)]
+    _ = subprocess.run([*base, "add", "unrelated"], env=shell.env, check=True)
+    before = subprocess.run(
+        [*base, "ls-files", "--stage", "-z"], env=shell.env, capture_output=True, check=True
+    ).stdout
+    head = subprocess.run(
+        [*base, "rev-parse", "HEAD"], env=shell.env, capture_output=True, check=True
+    ).stdout
+    script = """import create, sys
+from pathlib import Path
+create.approved = lambda question: True
+original_open = Path.open
+original_link = Path.symlink_to
+original_git = create.git_arguments
+failure = sys.argv[2]
+def opening(path, *args, **kwargs):
+    if path == create.ROOT / 'interface/greet.json' and failure in ('write', 'interrupt'):
+        if failure == 'interrupt': raise KeyboardInterrupt()
+        raise OSError('injected registry write failure')
+    return original_open(path, *args, **kwargs)
+def linking(path, target, **kwargs):
+    if path.name == 'greet' and failure == 'link': raise OSError('injected link failure')
+    return original_link(path, target, **kwargs)
+def git(*args):
+    return ['/usr/bin/false'] if args[0] == 'add' and failure == 'stage' else original_git(*args)
+Path.open = opening
+Path.symlink_to = linking
+create.git_arguments = git
+try: status = create.finish(Path(sys.argv[1]), force=True)
+except OSError: status = 74
+except KeyboardInterrupt: status = 130
+raise SystemExit(status)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(draft), failure],
+        cwd=shell.root,
+        env=shell.env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == {"write": 74, "interrupt": 130, "stage": 1, "link": 74}[failure], (
+        result.stderr
+    )
+    for name in (
+        "tasks/greet",
+        "verification/greet",
+        "requirements/greet.md",
+        "interface/greet.json",
+    ):
+        assert not (shell.root / name).exists()
+    assert destination.read_text() == "user-owned executable\n"
+    assert destination.stat().st_mode & 0o777 == 0o751
+    assert not list(destination.parent.glob(".ayi-backup-*"))
+    assert (
+        subprocess.run(
+            [*base, "ls-files", "--stage", "-z"], env=shell.env, capture_output=True, check=True
+        ).stdout
+        == before
+    )
+    assert (
+        subprocess.run(
+            [*base, "rev-parse", "HEAD"], env=shell.env, capture_output=True, check=True
+        ).stdout
+        == head
+    )

@@ -13,9 +13,9 @@ from interface import Interface
 from .conftest import Shell
 
 
-def manifest() -> dict[str, object]:
+def manifest(version: int = 1) -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": version,
         "runtime": "python",
         "name": "greet",
         "summary": "Greet a person",
@@ -25,7 +25,12 @@ def manifest() -> dict[str, object]:
                 "description": "Person to greet",
                 "required": True,
                 "prompt": "Choose a person",
-                "value": {"name": "NAME", "completion": {"kind": "none"}},
+                "value": {
+                    "name": "NAME",
+                    "completion": {"kind": "provider", "id": "git.branches"}
+                    if version == 2
+                    else {"kind": "none"},
+                },
             },
             {
                 "names": ["--style", "-s"],
@@ -168,9 +173,10 @@ def test_options_only_command_accepts_empty_end_of_options(shell: Shell) -> None
     assert result.stdout == ""
 
 
+@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("harness", ["pi", "codex"])
 def test_generated_shared_tool_passes_review_registration_and_completion(
-    shell: Shell, harness: str
+    shell: Shell, harness: str, version: int
 ) -> None:
     from .test_create import prepare as prepare_factory
 
@@ -186,12 +192,13 @@ set -eu
 test "$("$1" --name 'Space Name')" = 'Hello Space Name'
 if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
 """
+    document = manifest(version)
     bundle = {
         "proposal": 'name = "greet"\nstatus = "ready"\n',
         "requirements": "Greet a literal name. No network.\n",
         "task": body,
         "verification": verifier,
-        "interface": json.dumps(manifest()),
+        "interface": json.dumps(document),
     }
     if harness == "pi":
         source = (tools / "pi").read_text()
@@ -246,6 +253,21 @@ if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
     assert json.loads(completed.stdout) == [
         {"value": "--json", "description": "Emit JSON", "kind": "value"}
     ]
+    if version == 2:
+        _ = subprocess.run(
+            ["git", "-C", str(shell.root), "branch", "completion/feature"],
+            env=shell.env,
+            check=True,
+        )
+        dynamic = shell.run(
+            "complete",
+            input_text=json.dumps(
+                dict(command="greet", args=["--name", "completion/"], cursor=1, cwd=str(shell.root))
+            ),
+        )
+        assert dynamic.returncode == 0, dynamic.stderr
+        assert [row["value"] for row in json.loads(dynamic.stdout)] == ["completion/feature"]
+        assert json.loads((shell.root / "interface/greet.json").read_text())["schemaVersion"] == 2
     config = Path(shell.env["XDG_CONFIG_HOME"]) / "ayi-tools/greet.toml"
     config.parent.mkdir(parents=True)
     _ = config.write_text('[defaults]\nname = "Configured Name"\n')

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import subprocess
@@ -13,12 +12,13 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import NoReturn, TypeGuard, override
+from typing import TypeGuard
 
 from pydantic import JsonValue, ValidationError
 
 import ui
-from interface import Choices, Interface, Option, Value
+from interface import Choices, Interface, Option, UsageError, Value
+from interface import parser as parser
 
 
 class Code(StrEnum):
@@ -97,80 +97,6 @@ class Invocation:
         if not isinstance(value, tuple):
             raise TypeError(f"{name} is not a repeated input")
         return value
-
-
-class _Usage(Exception):
-    pass
-
-
-class _Parser(argparse.ArgumentParser):
-    @override
-    def error(self, message: str) -> NoReturn:
-        # argparse exposes expected parse failures through this adapter.
-        raise _Usage(message)
-
-
-def parser(interface: Interface) -> argparse.ArgumentParser:
-    result = _Parser(
-        prog=interface.name,
-        description=interface.summary,
-        allow_abbrev=False,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  "
-        + "\n  ".join(interface.examples)
-        + f"\n\nSettings: $XDG_CONFIG_HOME/ayi-tools/{interface.name}.toml"
-        "\nPriority: arguments > declared environment > [defaults] settings > manifest defaults."
-        "\nJSON: one success value on stdout; one error value on stderr."
-        "\nExit: 0 success, 1 declined, 64 usage, 65 config, 69 unavailable, 74 I/O, 130 interrupted.",
-    )
-    _ = result.add_argument(
-        "--json", action="store_true", help="Emit a stable JSON result; never prompt"
-    )
-    _ = result.add_argument(
-        "--no-input", action="store_true", help="Reject missing inputs without a prompt"
-    )
-    for option in interface.options:
-        description = option.description
-        if option.default is not None:
-            description += f" (default: {option.default})"
-        if option.env:
-            description += f" (env: {option.env})"
-        if option.required:
-            description += " (required)"
-        if option.value is None:
-            _ = result.add_argument(
-                *option.names,
-                dest=option.key,
-                help=description,
-                default=argparse.SUPPRESS,
-                action="count" if option.repeatable else argparse.BooleanOptionalAction,
-            )
-        else:
-            choices = option.value.completion
-            _ = result.add_argument(
-                *option.names,
-                dest=option.key,
-                help=description,
-                default=argparse.SUPPRESS,
-                metavar=option.value.name if not isinstance(choices, Choices) else None,
-                choices=choices.values if isinstance(choices, Choices) else None,
-                action="append" if option.repeatable else "store",
-            )
-    for positional in interface.positionals:
-        choices = positional.completion
-        _ = result.add_argument(
-            positional.name,
-            nargs="+"
-            if positional.repeatable and positional.required
-            else "*"
-            if positional.repeatable
-            else None
-            if positional.required
-            else "?",
-            default=argparse.SUPPRESS,
-            choices=choices.values if isinstance(choices, Choices) else None,
-        )
-    return result
 
 
 def _objects(value: object) -> TypeGuard[list[object]]:
@@ -273,7 +199,7 @@ def resolve(
     )
     try:
         namespace = parser(interface).parse_args(tokens)
-    except _Usage as error:
+    except UsageError as error:
         return Failure(Code.USAGE, str(error))
     raw: dict[str, object] = vars(namespace)
     interactive = can_prompt and not raw["json"] and not raw["no_input"]
@@ -352,7 +278,7 @@ def pick(invocation: Invocation, label: str, choices: Mapping[str, str]) -> str 
         )
     rows = {f"{key}: {label}": key for key, label in choices.items()}
     try:
-        answer = ui.entry(label, tuple(rows))
+        answer = ui.entry(label, tuple(rows), strict=True)
     except (EOFError, KeyboardInterrupt):
         return Failure(Code.INTERRUPTED, "Selection cancelled")
     if answer not in rows:
