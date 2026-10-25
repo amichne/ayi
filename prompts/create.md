@@ -34,6 +34,14 @@ Check both --help and -h: useful output, all declared option spellings, zero exi
 Tests must assert observable results, not merely successful execution or help text. Do not fake
 coverage with a generic exit-zero verifier. Ayi independently checks help and unknown-option rejection.
 Use a short shell task for simple native CLI orchestration. Use locked uv Python for substantial logic.
+
+For standalone Python tasks and verifiers, use `#!/usr/bin/env -S uv run --locked --script`.
+Declare PEP 723 metadata with `requires-python` and `dependencies`, even when dependencies are empty.
+Set `no-build = true` under `[tool.uv]`. Declare a named package index for third-party dependencies.
+Write only the five source files. Ayi creates adjacent `task.lock` and `verify.lock` files before review.
+
+Lock preparation does not run generated code. Keep each script beside its lockfile during verification.
+
 Do not depend on this conversation, the draft directory, or machine-specific paths.
 The verification must assert the requested output and the nearest invalid input or counterexample.
 Use disposable fixtures. Do not read credentials, change host files, or contact remote services during verification.
