@@ -264,8 +264,15 @@ def resolve(
     can_prompt: bool,
     entry: Callable[[str, tuple[str, ...]], str] = ui.entry,
 ) -> Invocation | Failure:
+    # argparse leaves an empty end-of-options marker unconsumed without positionals.
+    # Remove only that marker; another marker after it is a literal operand.
+    tokens = (
+        arguments[:-1]
+        if not interface.positionals and arguments[-1:] == ["--"] and arguments.count("--") == 1
+        else arguments
+    )
     try:
-        namespace = parser(interface).parse_args(arguments)
+        namespace = parser(interface).parse_args(tokens)
     except _Usage as error:
         return Failure(Code.USAGE, str(error))
     raw: dict[str, object] = vars(namespace)

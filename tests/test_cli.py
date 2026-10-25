@@ -152,6 +152,22 @@ def test_help_is_offline_even_with_invalid_user_configuration(shell: Shell) -> N
     assert json.loads(rejected.stderr)["error"]["code"] == "config"
 
 
+def test_options_only_command_accepts_empty_end_of_options(shell: Shell) -> None:
+    prepare(shell)
+    result = shell.tool("greet", "--name", "Ada", "--")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Hi Ada\n"
+    assert result.stderr == ""
+    for tail in (["--style", "formal"], ["--"], ["extra"]):
+        result = shell.tool("greet", "--json", "--name", "Ada", "--", *tail)
+        assert result.returncode == 64
+        assert result.stdout == ""
+        assert json.loads(result.stderr)["error"]["code"] == "usage"
+    result = shell.tool("greet", "--json", "--name", "--")
+    assert result.returncode == 64
+    assert result.stdout == ""
+
+
 @pytest.mark.parametrize("harness", ["pi", "codex"])
 def test_generated_shared_tool_passes_review_registration_and_completion(
     shell: Shell, harness: str
