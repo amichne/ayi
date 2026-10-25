@@ -12,6 +12,22 @@ ayi explain large-files
 ayi                          # enter a new request interactively
 ```
 
+## Shared CLI components
+
+New Python tools use one shared runtime for arguments, help, choices, settings, JSON results, and bounded Pi requests.
+The interface manifest supplies the public contract. A small domain handler supplies the operation.
+Ayi assembles the launcher before review and supplies the same design policy to every model session.
+Existing standalone tools keep their contracts.
+
+Users change supported defaults in `$XDG_CONFIG_HOME/ayi-tools/<name>.toml`, or `~/.config/ayi-tools/<name>.toml`.
+The file accepts a `[defaults]` table with declared option keys.
+Explicit arguments override declared environment variables, user settings, and manifest defaults.
+Unknown or malformed settings fail before domain work.
+Use `ayi modify <name>` to change behavior through a reviewed draft without a source edit.
+
+Read [Compose a CLI with Ayi](docs/cli-design.md) for the chosen conventions, source decisions, component contracts, and executable example.
+Read [Configure an Ayi tool](docs/cli-configuration.md) for the configuration structure and rules for future extensions.
+
 ## Install
 
 Install mise, uv 0.12.9 or later, curl, Pi, Git, and ShellCheck through your approved package provider.

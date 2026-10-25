@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 import install
 import ui
+from cli import HEADER, scaffold
 from interface import Interface
 from sessions import Implementation
 
@@ -174,10 +175,15 @@ def read_draft(directory: Path) -> Draft | Rejected:
         if interface_path.is_symlink() or not interface_path.is_file():
             return Rejected(Rejection.INVALID)
         interface = interface_path.read_bytes()
-        if Interface.model_validate_json(interface).name != name:
+        contract = Interface.model_validate_json(interface)
+        if contract.name != name:
             return Rejected(Rejection.INVALID)
+        if contract.runtime == "python":
+            if not task.decode().startswith(HEADER):
+                return Rejected(Rejection.INVALID)
+            _ = compile(task, "task", "exec")
         return Draft(name, task, verification, requirements, interface)
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValidationError):
+    except (OSError, UnicodeError, SyntaxError, tomllib.TOMLDecodeError, ValidationError):
         return Rejected(Rejection.INVALID)
 
 
@@ -289,6 +295,8 @@ def verify(prepared: _PreparedDraft) -> _VerifiedDraft | VerificationFailed:
         home = directory / "home"
         home.mkdir()
         env = isolated_environment(home)
+        env["AYI_RUNTIME_ROOT"] = str(ROOT)
+        env["AYI_INTERFACE_PATH"] = str(interface_path)
         if b"bash" in draft.task.splitlines()[0]:
             for args in (["bash", "-n", str(task)], ["shellcheck", "-S", "warning", str(task)]):
                 result = subprocess.run(
@@ -501,7 +509,14 @@ def generate(request: str, directory: Path, implementation: Implementation) -> i
         return 69
     ui.status(f"Proposed draft: {directory}")
     model_args = ["--model", implementation.model] if implementation.model is not None else []
-    prompt = f"Request: {request}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}"
+    prompt = (
+        (ROOT / "prompts/cli-policy.md").read_text()
+        + "\nShared component API:\n"
+        + (ROOT / "prompts/cli-components.md").read_text()
+        + "\nAuthoritative interface JSON Schema:\n"
+        + json.dumps(Interface.model_json_schema(by_alias=True))
+        + f"\nRequest: {request}\nDraft directory: {directory}\nRegistry: {ROOT / 'tasks'}"
+    )
     if harness == "pi":
         arguments = [
             "pi",
@@ -578,6 +593,18 @@ def generate(request: str, directory: Path, implementation: Implementation) -> i
             ("interface.json", bundle.interface),
         ):
             _ = (directory / filename).write_text(content)
+    try:
+        interface = Interface.model_validate_json((directory / "interface.json").read_bytes())
+        if interface.runtime == "python":
+            task = directory / "task"
+            if task.is_symlink():
+                return 65
+            body = task.read_text()
+            if not body.startswith(HEADER):
+                _ = task.write_text(scaffold(interface, body))
+    except (OSError, UnicodeError, ValidationError):
+        ui.status(f"ayi: {Rejection.INVALID}: command interface or task body")
+        return 65
     return 0
 
 

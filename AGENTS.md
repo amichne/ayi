@@ -8,6 +8,13 @@ Keep each generated uv script beside its `.lock` file under `tasks/` or `verific
 
 The registry uses this checkout's Git index. Keep dotfiles and HOME Git indexes separate.
 `factory.py` owns the model-driven tool interview and read-only explanations.
+`interface.py` owns command declarations for parsing, help, completion, and defaults.
+`cli.py` owns shared Python launchers, resolved inputs, prompts, output, and runtime Pi requests.
+`prompts/cli-policy.md` supplies the common design policy to every factory and generation model call.
+`prompts/cli-components.md` describes the implementation API supplied during generation.
+For `runtime = "python"`, `create.py` assembles the launcher before review.
+The installed launcher and disposable verification supply the runtime and interface paths.
+Keep user preferences under XDG config. Keep domain extensions inside reviewed task source.
 `sessions.py` owns interview values and local checkpoints under XDG state.
 Keep each submitted answer, pending answer, and proposed approach in a checkpoint.
 A fork preserves its parent and needs a separate generated draft.

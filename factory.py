@@ -52,6 +52,11 @@ def model(mode: str, request: str, model_name: str | None = None) -> str:
 def model_response(mode: str, request: str, model_name: str | None = None) -> str:
     if shutil.which("pi") is None:
         raise FactoryError("missing dependency: pi", 69)
+    # Every design, discussion, and explanation receives the same source-owned policy.
+    payload = json.loads(request)
+    payload["cli_policy"] = (create.ROOT / "prompts/cli-policy.md").read_text()
+    payload["cli_components"] = (create.ROOT / "prompts/cli-components.md").read_text()
+    request = json.dumps(payload)
     result = subprocess.run(
         [
             "pi",

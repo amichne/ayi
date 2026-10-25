@@ -175,7 +175,11 @@ def resolve(request: Request) -> list[Candidate]:
     interface = read_interface(request.command)
     if interface is None:
         return []
-    options = {name: option for option in interface.options for name in option.names}
+    options = {
+        name: option
+        for option in interface.options
+        for name in option.names + (option.negative_names if interface.runtime == "python" else [])
+    }
     pending: Option | None = None
     used: set[str] = set()
     positional = 0
@@ -187,7 +191,11 @@ def resolve(request: Request) -> list[Candidate]:
             literal = True
         elif not literal and word.split("=", 1)[0] in options:
             option = options[word.split("=", 1)[0]]
-            used.update(option.names if not option.repeatable else [])
+            used.update(
+                option.names + (option.negative_names if interface.runtime == "python" else [])
+                if not option.repeatable
+                else []
+            )
             if option.value is not None and "=" not in word:
                 pending = option
         elif literal or not word.startswith("-"):
@@ -205,6 +213,15 @@ def resolve(request: Request) -> list[Candidate]:
         return []
     result: list[Candidate] = []
     if not literal:
+        if interface.runtime == "python":
+            result.extend(
+                Candidate(value=name, description=description)
+                for name, description in (
+                    ("--json", "Emit JSON"),
+                    ("--no-input", "Disable prompts"),
+                )
+                if name.startswith(prefix) and name not in before
+            )
         result.extend(
             Candidate(value=name, description=option.description)
             for name, option in options.items()

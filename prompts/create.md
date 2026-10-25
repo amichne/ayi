@@ -1,4 +1,5 @@
 Create one ordinary executable mise task from the user's request.
+Apply the supplied CLI policy and shared component API within this generation scope.
 
 Ask the user about unresolved inputs, output, dependencies, effects, and acceptance criteria.
 Do not implement the task until the user resolves those questions.
@@ -16,24 +17,28 @@ Write these five files:
 
 - `proposal.toml`: `name = "lowercase-name"` and `status = "ready"` or `status = "needs-input"`.
 - `requirements.md`: resolved requirements, dependencies, invocation, expected results, and remaining questions.
-- `task`: an independent executable with a shebang and `#MISE description="..."` metadata.
+- `task`: Python imports and `handle(invocation)` for the shared runtime, or a standalone executable for a justified exception.
 - `verify`: an independent executable that accepts the absolute task path as its first argument.
 - `interface.json`: a version-1 command interface matching the task exactly (see below).
 
-Use only the `description` key in mise metadata. The registry owns the task directory.
+Default new tools to `runtime: "python"` and the shared components.
+Ayi adds the shared launcher and mise metadata before review.
+For a standalone task, supply its shebang and only the `description` key in mise metadata.
+The registry owns the task directory.
 The caller installs a launcher at ~/.local/bin/<name>; use direct `<name>` invocation
 in examples, never `ayi run`. Implement --help and -h as standalone arguments: print
 useful usage and options to stdout and exit 0 without performing the tool's work.
 The launcher appends the Ayi attribution to help; do not add a duplicate attribution.
 Verification must check --help, including its successful exit and useful output.
 Verification receives the absolute reviewed interface.json path as its second argument.
-Read it as data; never edit either verification input. Use disposable fixtures to assert every
-declared option and alias, each declared choices value, nearest invalid value, unknown options,
-required/missing arguments, output capabilities, and the documented invocation examples.
+Read it as data. Never edit either verification input.
+Use disposable fixtures to assert each declared option, alias, and choice.
+Include the nearest invalid value, unknown options, missing arguments, output modes, and documented examples.
 Check both --help and -h: useful output, all declared option spellings, zero exit, no business effects.
 Tests must assert observable results, not merely successful execution or help text. Do not fake
 coverage with a generic exit-zero verifier. Ayi independently checks help and unknown-option rejection.
-Use a short shell task for simple native CLI orchestration. Use locked uv Python for substantial logic.
+Use a standalone task only for an existing contract or a concrete dependency that the shared runtime cannot support.
+Explain that choice in requirements.md. Do not duplicate shared blocks merely for convenience.
 
 For standalone Python tasks and verifiers, use `#!/usr/bin/env -S uv run --locked --script`.
 Declare PEP 723 metadata with `requires-python` and `dependencies`, even when dependencies are empty.
@@ -49,12 +54,16 @@ Do not execute generated code or install files. The caller supplies paths to the
 Do not print the scripts. Return only a short summary and the draft paths.
 Leave `status = "needs-input"` when requirements remain unresolved.
 
-Interface contract (all objects are closed; no extra keys):
-{"schemaVersion":1,"name":"exact-command-name","summary":"One line",
+Use the supplied JSON Schema as the authoritative interface contract.
+Every object rejects extra keys. This example uses the shared runtime:
+
+```json
+{"schemaVersion":1,"runtime":"python","name":"exact-command-name","summary":"One line",
  "positionals":[{"name":"directory","required":false,"repeatable":false,"completion":{"kind":"directory"}}],
  "options":[{"names":["--sort","-s"],"description":"Sort results","repeatable":false,
              "value":{"name":"ORDER","completion":{"kind":"choices","values":["size","name"]}}}],
- "examples":["exact-command-name --sort size ."],"output":["text"]}
+ "examples":["exact-command-name --sort size ."],"output":["text","json"]}
+```
 Use empty arrays for absent positionals/options. Omit `value` for flags. Completion kinds are
 exactly `none`, `choices` (nonempty `values` array), `file`, and `directory`. Each value must
 declare its completion kind, even `none`. Never infer this metadata later from --help.
@@ -74,8 +83,7 @@ Shared presentation conventions:
 - Honor NO_COLOR and TERM=dumb; redirected output has no ANSI controls or animation.
 - Help includes usage, description, every option/alias, accepted choices, and examples.
 - Fail on unknown flags and invalid/missing values with nonzero exit; never silently ignore them.
-- Native wrappers remain standalone. Substantial Python tools use locked uv dependencies.
-  They may reuse Ayi's ui.py stderr helpers when the runtime is explicitly available, but must
-  still run in the disposable verification directory and after cloning. Never embed machine paths
-  or import Ayi through an ambient working directory. Use the same conventions without importing
-  a shared runtime when a standalone task is more appropriate.
+- Shared Python tools use Ayi's locked runtime and ui.py helpers.
+  They must run in the disposable verification directory and after a clone.
+  Never embed machine paths or import Ayi through an ambient working directory.
+- Standalone exceptions must obey these same output and input contracts.
