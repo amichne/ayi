@@ -214,16 +214,22 @@ def test_picker_returns_stable_ids_and_rejects_custom_answers(
     invocation = cli.Invocation({}, {}, True)
     choices = {"first-id": "Same label", "second-id": "Same label"}
 
-    def choose(_label: str, options: Sequence[str] = (), *, initial: str = "") -> str:
+    def choose(
+        _label: str, options: Sequence[str] = (), *, initial: str = "", strict: bool = False
+    ) -> str:
         assert options == ("first-id: Same label", "second-id: Same label")
         assert initial == ""
+        assert strict
         return options[1]
 
     monkeypatch.setattr(cli.ui, "entry", choose)
     assert cli.pick(invocation, "Select a record", choices) == "second-id"
 
-    def custom(_label: str, _options: Sequence[str] = (), *, initial: str = "") -> str:
+    def custom(
+        _label: str, _options: Sequence[str] = (), *, initial: str = "", strict: bool = False
+    ) -> str:
         assert initial == ""
+        assert strict
         return "custom"
 
     monkeypatch.setattr(cli.ui, "entry", custom)
@@ -236,7 +242,9 @@ def test_picker_returns_stable_ids_and_rejects_custom_answers(
 def test_picker_and_confirmation_preserve_cancellation(
     monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
 ) -> None:
-    def cancelled(_label: str, _options: Sequence[str] = (), *, initial: str = "") -> str:
+    def cancelled(
+        _label: str, _options: Sequence[str] = (), *, initial: str = "", strict: bool = False
+    ) -> str:
         assert initial == ""
         raise error()
 
@@ -401,7 +409,12 @@ def test_public_runner_rejects_before_domain_work(
 
 
 @pytest.mark.parametrize(
-    "keys,expected", [(b"\x1b[B\x1b[B\r", "second-id"), (b"\x03", "interrupted")]
+    "keys,expected",
+    [
+        (b"\x1b[B\x1b[B\r", "second-id"),
+        (b"missing\r\x15\x1b[B\x1b[B\r", "second-id"),
+        (b"\x03", "interrupted"),
+    ],
 )
 def test_real_picker_restores_terminal_after_selection_or_cancel(
     tmp_path: Path, keys: bytes, expected: str

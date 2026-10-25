@@ -12,8 +12,8 @@ Existing standalone tools remain supported.
 
 | Owner | Responsibility |
 | --- | --- |
-| `interface.py` | The strict interface manifest, argument definitions, choices, defaults, and examples. |
-| Shared CLI runtime | Argument parsing, resolved inputs, pickers, configuration precedence, results, and exit behavior. |
+| `interface.py` | The strict interface manifest and shared argparse grammar, choices, defaults, and examples. |
+| Shared CLI runtime | Resolved inputs, pickers, configuration precedence, results, and exit behavior. |
 | `ui.py` | Inline input, status messages, progress, and terminal presentation. |
 | `completion.py` | Local completion from the interface manifest. |
 | Domain handler | The tool's useful operation, domain rules, and explicit effect adapters. |
@@ -59,8 +59,11 @@ Keep result serialization in the shared runtime.
 Use `ui.status` and `ui.activity` for diagnostics and progress on stderr.
 
 The manifest owns option names, help, examples, types, choices, and defaults.
-The runtime uses `argparse` for option syntax and help.
-Completion uses the same manifest.
+The runtime and completion use the same `interface.parser` argparse construction.
+Completion permits missing required operands and an internal cursor operand;
+option spellings, actions, aliases, arities, and token interpretation stay shared.
+Candidates are checked against that grammar before emission, including whether
+a leading hyphen needs `--` or an attached option value.
 Do not maintain a second option list inside the handler.
 
 Use `examples/brief` as the runnable assembly example.
@@ -105,6 +108,58 @@ The error names the input and the argument that supplies it.
 Help remains deterministic, offline, and independent of model access.
 It states the purpose, syntax, defaults, and examples.
 Help and completion never call the harness or mutate external state.
+
+### Inline presentation
+
+The existing prompt_toolkit application stays inline, never full-screen.
+Context and candidates sit above the final editable row, with a height budget
+and explicit ellipses for elided context. Answered and cancelled records retain
+the full question in scrollback.
+Typing filters candidates by case-insensitive substring. Arrows and Tab preview
+matches without losing the filter or its cursor; editing a preview starts a new filter.
+Interviews permit custom answers. `cli.pick` uses strict declared choices.
+
+`NO_COLOR` suppresses color, not keyboard interaction. CI, unavailable terminal
+streams, and `TERM=dumb` use plain output. Runtime JSON and no-input modes never prompt.
+Pending, Completed, Failed, Cancelled, and Unavailable states have textual labels.
+There is no independent spinner or Live renderer competing with active input.
+Concurrent Python output is queued above input through `patch_stdout`.
+Capture and forward child-process output while input is active: inherited TTY
+descriptors and raw writes bypass that queue.
+
+### Contextual completion
+
+Version 1 retains `none`, `choices`, `file`, and `directory` completion.
+Version 2 adds exactly one registered provider:
+
+```json
+{"kind": "provider", "id": "git.branches"}
+```
+
+Declare it on a text option or positional in a `schemaVersion: 2` manifest.
+The provider reads local branch refs in the completion request's working directory,
+using fixed Git plumbing arguments, a 150 ms process timeout, and a 1,000-ref cap.
+Prefix matching happens before the cap. Results are sorted, deduplicated, and
+exclude control characters. Git failure, timeout, or absence gives no candidates.
+Git configuration/repository selectors from the environment are not inherited.
+No generated command, model, remote operation, hook, or executable provider field
+is part of this completion path. Suggestions are hints, not freshness guarantees.
+
+To add a provider to an existing command, request `ayi modify <name>`, then review
+the version-2 manifest and command bundle together. Existing manifests are never
+rewritten by execution or completion. Standalone commands keep their own parsers
+and independently reviewed executable verification.
+
+Source `eval "$(ayi shell init zsh)"` once after `compinit`. The next prompt refresh
+discovers installed command additions, removals, and changed link targets.
+Unchanged membership starts no Python process. Another completion owner's mapping
+is preserved; `compdef _ayi NAME` is an explicit override. No startup file is edited.
+Zsh's native `compadd` owns quoting and insertion.
+JSON completion requests retain the token-index `cursor`; optional `offset` selects
+the character position within that token. Candidates replace the current token.
+
+See [terminal and completion verification](inline-terminal-verification.md) for
+acceptance coverage, measured latency, visual evidence, and remaining review limits.
 
 ## Adapt without source edits
 

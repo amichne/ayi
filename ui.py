@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import difflib
 import os
+import signal
 import sys
+import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from types import FrameType
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -34,52 +40,130 @@ STYLE = Style.from_dict(
         "title": "bold",
     }
 )
+MONOCHROME_STYLE = Style.from_dict({"accent": "bold", "selected": "reverse bold", "title": "bold"})
+_inline_active = False
 
 
 def can_prompt() -> bool:
-    return (
-        sys.stdin.isatty()
-        and sys.stdout.isatty()
-        and sys.stderr.isatty()
-        and not os.environ.get("CI")
-    )
+    """Input capability is independent of color and cursor rendering."""
+    try:
+        return (
+            sys.stdin.isatty()
+            and sys.stdout.isatty()
+            and sys.stderr.isatty()
+            and not os.environ.get("CI")
+        )
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def interactive() -> bool:
+    return can_prompt() and os.environ.get("TERM") != "dumb"
+
+
+def _unicode() -> bool:
     try:
         _ = "┌─│└❯◆↑↓↵".encode(sys.stderr.encoding or "ascii")
     except UnicodeError:
         return False
-    return can_prompt() and os.environ.get("TERM") != "dumb" and "NO_COLOR" not in os.environ
+    return True
+
+
+def _color() -> bool:
+    return interactive() and "NO_COLOR" not in os.environ
 
 
 def console() -> Console:
-    return Console(stderr=True, force_terminal=interactive(), no_color=not interactive())
+    # During input, patch_stdout schedules complete lines above the application.
+    # Rich remains a formatter, never a second live renderer (or an ANSI writer).
+    return Console(
+        stderr=True,
+        force_terminal=interactive() and not _inline_active,
+        no_color=not _color() or _inline_active,
+    )
 
 
 def status(message: str) -> None:
     console().print(
-        f"  ◆  {message}" if interactive() else message, style="cyan", markup=False, highlight=False
+        f"  {'◆' if _unicode() else '*'}  {message}" if interactive() else message,
+        style="cyan",
+        markup=False,
+        highlight=False,
     )
 
 
 @contextmanager
 def activity(message: str) -> Iterator[None]:
-    output = console()
-    if interactive():
-        with output.status(f"  {message}", spinner="dots"):
-            yield
-    else:
-        status(message)
+    """Stable, textual lifecycle events share the active input's output queue.
+
+    Deliberately no independent Rich Live/spinner: activity may begin before an
+    entry or on a worker thread and must never take ownership of its input row.
+    """
+    status(f"Pending: {message}")
+    try:
         yield
+    except BaseException:
+        status(f"Failed: {message}")
+        raise
+    else:
+        status(f"Completed: {message}")
 
 
-def entry(label: str, options: Sequence[str] = (), *, initial: str = "") -> str:
+@contextmanager
+def _termination(app: Application[str]) -> Iterator[None]:
+    """Let the application's normal finally blocks restore the TTY on SIGTERM."""
+    previous = signal.getsignal(signal.SIGTERM)
+    install = threading.current_thread() is threading.main_thread() and previous == signal.SIG_DFL
+
+    def terminate(number: int, _frame: FrameType | None) -> None:
+        error = SystemExit(128 + number)
+        loop = app.loop
+        if loop is None:
+            raise error
+
+        def exit_application() -> None:
+            if not app.is_done:
+                app.exit(exception=error)
+
+        _ = loop.call_soon_threadsafe(exit_application)
+
+    if install:
+        _ = signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        if install:
+            _ = signal.signal(signal.SIGTERM, previous)
+
+
+def _clip(text: str, width: int) -> str:
+    line = Text(text)
+    line.truncate(max(1, width), overflow="ellipsis")
+    return line.plain
+
+
+def _wrap(text: str, width: int, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    lines = Text(text).wrap(console(), max(1, width))
+    result = [line.plain for line in lines[:limit]]
+    if len(lines) > limit:
+        result[-1] = _clip(result[-1].rstrip() + " …", width)
+    return result
+
+
+def entry(
+    label: str, options: Sequence[str] = (), *, initial: str = "", strict: bool = False
+) -> str:
     """Candidates and context always precede the final input row.
 
-    Up/down and Tab copy a candidate into the editable input row.
+    Typing filters case-insensitively; navigation previews matches without
+    replacing the query. Editing a preview starts a new filter. The custom row
+    restores the query. Strict pickers accept only exact declared values.
     The transient region collapses into a stable scrollback record on completion.
     """
+    if strict and not options:
+        raise ValueError("A strict picker needs at least one choice")
     if not interactive():
         print(label, file=sys.stderr, flush=True)
         for index, option in enumerate(options, 1):
@@ -89,77 +173,153 @@ def entry(label: str, options: Sequence[str] = (), *, initial: str = "") -> str:
                 f"Current answer: {initial}\nEnter keeps it. Type a replacement or + text to append.",
                 file=sys.stderr,
             )
-        print("ayi > ", end="", file=sys.stderr, flush=True)
-        answer = input().strip()
-        if initial:
-            answer = initial + answer[1:] if answer.startswith("+") else answer or initial
-        if options and answer.isdecimal() and 1 <= int(answer) <= len(options):
-            answer = options[int(answer) - 1]
-        return answer
+        while True:
+            print("ayi > ", end="", file=sys.stderr, flush=True)
+            answer = input().strip()
+            if initial:
+                answer = initial + answer[1:] if answer.startswith("+") else answer or initial
+            if options and answer.isdecimal() and 1 <= int(answer) <= len(options):
+                answer = options[int(answer) - 1]
+            if not strict or answer in options:
+                return answer
+            print("Choose a listed value.", file=sys.stderr, flush=True)
 
+    global _inline_active
+    if _inline_active:
+        raise RuntimeError("An inline interaction is already active")
+    unicode = _unicode()
     selected: int | None = None
+    query = initial
+    query_cursor = len(initial)
+    navigating = False
+    validation = ""
     field = TextArea(
         height=1,
         text=initial,
-        prompt=[("class:accent", "  ayi ❯ ")],
         multiline=False,
         wrap_lines=False,
     )
     field.buffer.cursor_position = len(initial)
-    candidates = [*options, ""] if options else []
+
+    def candidates() -> list[str | None]:
+        matches: list[str | None] = [
+            option for option in options if query.casefold() in option.casefold()
+        ]
+        if options and not strict:
+            matches.append(None)
+        return matches
+
+    def edited(buffer: Buffer) -> None:
+        nonlocal query, selected, validation
+        if not navigating:
+            query = buffer.text
+            selected = None
+            validation = ""
+
+    field.buffer.on_text_changed += edited
+
+    def context_rows() -> list[tuple[str, str]]:
+        size = app.output.get_size()
+        budget = max(0, size.rows - 1)
+        if not budget:
+            return []
+        width = max(1, size.columns - 5)
+        choices = candidates()
+        # Budget physical rows, not logical strings: long context cannot crowd
+        # out input. The selected candidate gets wrapping priority over others.
+        candidate_rows = min(2, len(choices))
+        if selected is not None and choices[selected] is not None:
+            candidate_rows = max(candidate_rows, len(_wrap(choices[selected] or "", width - 2, 3)))
+        heading_budget = min(4, max(0, budget - 1 - candidate_rows))
+        heading = _wrap(f"ayi / {label}", width, heading_budget)
+        rows: list[tuple[str, str]] = [
+            ("class:title", ("  ┌─ " if unicode else "  +- ") + text)
+            if index == 0
+            else ("", ("  │  " if unicode else "  |  ") + text)
+            for index, text in enumerate(heading)
+        ]
+        count = min(6, budget - len(rows) - 1)
+        focus = selected if selected is not None else 0
+        focused_lines = 1
+        if selected is not None and choices[selected] is not None:
+            focused_lines = len(_wrap(choices[selected] or "", width - 2, min(3, count)))
+        start = max(0, focus - max(0, count - focused_lines))
+        remaining = count
+        for index in range(start, len(choices)):
+            if remaining <= 0:
+                break
+            focused = index == selected
+            candidate = choices[index]
+            text = candidate if candidate is not None else "Write your own answer"
+            if candidate is None and query:
+                text = ("Custom: " if len(choices) > 1 else "No matches; custom: ") + query
+            # Candidate values can contain newlines, but each preview row has a
+            # known cell width. The returned value itself is never normalized.
+            text = " ".join(text.splitlines())
+            lines = (
+                _wrap(text, width - 2, min(3, remaining)) if focused else [_clip(text, width - 2)]
+            )
+            for line_index, line in enumerate(lines):
+                marker = ("❯" if unicode else ">") if focused and line_index == 0 else " "
+                prefix = "  │  " if unicode else "  |  "
+                rows.append(("class:selected" if focused else "", f"{prefix}{marker} {line}"))
+                remaining -= 1
+        if options and not choices and count > 0:
+            rows.append(("class:muted", "  No matches"))
+        hint = "enter submit · esc cancel"
+        if options:
+            hint = "↑↓ tab · enter · esc" if unicode else "up/down tab enter esc"
+            if size.columns >= 60:
+                hint = f"{len(choices) - int(not strict)} matches · {hint} · type to filter"
+        rows.append(
+            ("class:muted", ("  └─ " if unicode else "  +- ") + _clip(validation or hint, width))
+        )
+        return rows
 
     def context() -> list[tuple[str, str]]:
-        heading, _, question = label.partition("\n")
-        rows: list[tuple[str, str]] = [
-            ("class:accent", "  ┌─ "),
-            ("class:title", f"ayi / {heading}\n"),
+        rows = context_rows()
+        return [
+            (style, text + ("\n" if index < len(rows) - 1 else ""))
+            for index, (style, text) in enumerate(rows)
         ]
-        if question:
-            for line in Text(question).wrap(console(), max(1, app.output.get_size().columns - 5)):
-                rows.extend([("class:muted", "  │  "), ("", f"{line.plain}\n")])
-        # Reserve the final row for input, even in small terminals.
-        count = max(0, min(6, app.output.get_size().rows - 4))
-        start = max(0, (selected or 0) - count + 1)
-        for index in range(start, min(len(candidates), start + count)):
-            focused = index == selected
-            rows.extend(
-                [
-                    ("class:accent" if focused else "class:muted", "  │  "),
-                    (
-                        "class:selected" if focused else "",
-                        f" {'❯' if focused else ' '} {candidates[index] or 'Write your own answer'} ",
-                    ),
-                    ("", "\n"),
-                ]
-            )
-        help_text = "↵ submit · esc cancel"
-        if options:
-            help_text = (
-                "↑↓ tab · ↵ · esc"
-                if app.output.get_size().columns < 45
-                else "↑↓ choose · type to edit · ↵ accept · esc cancel"
-            )
-        rows.extend([("class:muted", "  └─ "), ("class:muted", help_text)])
-        return rows
 
     bindings = KeyBindings()
 
+    def choose(direction: int) -> None:
+        nonlocal selected, navigating, validation, query_cursor
+        choices = candidates()
+        if choices:
+            if selected is None or choices[selected] is None:
+                query_cursor = field.buffer.cursor_position
+            selected = (
+                (0 if direction > 0 else len(choices) - 1)
+                if selected is None
+                else (selected + direction) % len(choices)
+            )
+            value = choices[selected]
+            navigating = True
+            try:
+                text = query if value is None else value
+                field.buffer.document = Document(
+                    text, cursor_position=query_cursor if value is None else len(text)
+                )
+            finally:
+                navigating = False
+            validation = ""
+
     def _next_choice(_event: object) -> None:
-        nonlocal selected
-        if candidates:
-            selected = 0 if selected is None else (selected + 1) % len(candidates)
-            field.text = candidates[selected]
-            field.buffer.cursor_position = len(field.text)
+        choose(1)
 
     def _previous_choice(_event: object) -> None:
-        nonlocal selected
-        if candidates:
-            selected = len(candidates) - 1 if selected is None else (selected - 1) % len(candidates)
-            field.text = candidates[selected]
-            field.buffer.cursor_position = len(field.text)
+        choose(-1)
 
     def _accept(_event: object) -> None:
-        app.exit(result=field.text.strip())
+        nonlocal validation
+        answer = field.text.strip()
+        if strict and answer not in options:
+            validation = "Choose a listed value; use tab or arrows."
+        else:
+            app.exit(result=answer)
 
     def _cancel(_event: object) -> None:
         app.exit(exception=EOFError())
@@ -169,28 +329,71 @@ def entry(label: str, options: Sequence[str] = (), *, initial: str = "") -> str:
     for key in ("up", "s-tab"):
         _ = bindings.add(key)(_previous_choice)
     _ = bindings.add("enter")(_accept)
-    for key in ("escape", "c-c", "c-d"):
+    for key in ("escape", "c-c", "c-d", "<sigint>"):
         _ = bindings.add(key, eager=True)(_cancel)
+
+    last_width: int | None = None
+
+    def reflow(application: Application[str]) -> None:
+        nonlocal last_width
+        width = application.output.get_size().columns
+        if width != last_width:
+            # Window retains horizontal scroll even when a resize makes the
+            # whole answer fit. Recompute its viewport, never the edit buffer.
+            field.window.horizontal_scroll = 0
+            last_width = width
 
     app: Application[str] = Application(
         layout=Layout(
             HSplit(
                 [
-                    Window(FormattedTextControl(context), dont_extend_height=True, wrap_lines=True),
-                    field,
+                    Window(
+                        FormattedTextControl(context),
+                        height=lambda: len(context_rows()),
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                    VSplit(
+                        [
+                            Window(
+                                FormattedTextControl(
+                                    [("class:accent", "  ayi ❯ " if unicode else "  ayi > ")]
+                                ),
+                                width=8,
+                                height=1,
+                            ),
+                            field,
+                        ],
+                        height=1,
+                    ),
                 ]
             ),
             focused_element=field,
         ),
         key_bindings=bindings,
-        style=STYLE,
+        style=STYLE if _color() else MONOCHROME_STYLE,
+        color_depth=None if _color() else ColorDepth.DEPTH_1_BIT,
         output=create_output(stdout=sys.stderr),
         full_screen=False,
         erase_when_done=True,
+        before_render=reflow,
     )
-    with patch_stdout():
-        answer = app.run()
-    status(f"{label}: {answer}")
+    _inline_active = True
+    try:
+        # Keep the shared AppSession: patch_stdout's flush thread uses it to
+        # schedule output through the running application's redraw lifecycle.
+        with patch_stdout(), _termination(app):
+            answer = app.run()
+    except (EOFError, KeyboardInterrupt, SystemExit):
+        status(f"Cancelled: {label}")
+        raise
+    except Exception:
+        status(f"Failed: {label}")
+        raise
+    finally:
+        _inline_active = False
+    # The live summary may be elided, never the stable question/answer record.
+    status(f"Answered: {label}: {answer}")
     return answer
 
 
@@ -239,7 +442,9 @@ def review(label: str, content: bytes, previous: bytes | None = None) -> None:
 
 
 def explain(text: str) -> None:
-    output = Console(force_terminal=interactive(), no_color=not interactive())
+    output = Console(
+        force_terminal=interactive() and not _inline_active, no_color=not _color() or _inline_active
+    )
     if interactive():
         output.print(Markdown(text))
     else:
@@ -247,7 +452,9 @@ def explain(text: str) -> None:
 
 
 def command_list(rows: Sequence[tuple[str, str, str]]) -> None:
-    output = Console(force_terminal=interactive(), no_color=not interactive())
+    output = Console(
+        force_terminal=interactive() and not _inline_active, no_color=not _color() or _inline_active
+    )
     if not rows:
         output.print(
             'No Ayi commands registered. Create one with: ayi new <name> "<request>"', markup=False

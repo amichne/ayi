@@ -45,6 +45,12 @@ Keep `--help` deterministic and independent of authentication, network access, a
 Include useful examples and visible defaults in help.
 Keep completion local and free of effects.
 Generate help and completion from the same manifest.
+Keep version-1 manifests unchanged unless the requested modification needs a new capability.
+For local Git branch suggestions, declare `schemaVersion: 2` and
+`{"kind": "provider", "id": "git.branches"}` on a text value.
+No executable or model-driven completion providers are supported.
+Convert an existing command only in the reviewed `ayi modify` bundle;
+verify its public syntax, completion, and normal operation before registration.
 
 Give each interactive input an explicit argument equivalent.
 Use a picker only for a finite set of declared choices.
