@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -11,6 +12,7 @@ import struct
 import subprocess
 import sys
 import termios
+import textwrap
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -440,5 +442,75 @@ def test_plain_input_has_no_terminal_controls(
             process.stderr.close()
         if process.stdin is not None:
             process.stdin.close()
+        os.close(slave)
+        os.close(master)
+
+
+@pytest.mark.parametrize(
+    "width,keys,expected",
+    [
+        (80, b"answer with spaces\r", "answer with spaces"),
+        (28, b"narrow answer\r", "narrow answer"),
+        (80, b"\x04", "EOF"),
+        (80, b"\x03", "INTERRUPTED"),
+    ],
+)
+def test_generation_input_recipe_restores_terminal(
+    width: int, keys: bytes, expected: str, tmp_path: Path
+) -> None:
+    guide = Path(__file__).resolve().parents[1] / "prompts/cli-components.md"
+    examples = re.findall(r"```python\n(.*?)\n```", guide.read_text(), re.DOTALL)
+    recipe = next(example for example in examples if "create_input" in example)
+    source = (
+        "try:\n"
+        + textwrap.indent(recipe, "    ")
+        + "\nexcept EOFError:\n    print('OUTCOME=EOF')\n"
+        "except KeyboardInterrupt:\n    print('OUTCOME=INTERRUPTED')\n"
+        "else:\n    print('OUTCOME=' + question)\n"
+    )
+    master, slave = pty.openpty()
+    _ = fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 20, width, 0, 0))
+    original = termios.tcgetattr(master)
+
+    def controlling_terminal() -> None:
+        os.setsid()
+        _ = fcntl.ioctl(1, termios.TIOCSCTTY, 0)
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", source],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env={"HOME": str(tmp_path), "TERM": "xterm-256color", "PROMPT_TOOLKIT_NO_CPR": "1"},
+        preexec_fn=controlling_terminal,
+    )
+    output = b""
+    sent = False
+    deadline = time.monotonic() + 8
+    try:
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO or process.poll() is None:
+                        raise
+                    break
+                if not chunk:
+                    break
+                output += chunk
+                if b"You >" in output and not sent:
+                    _ = os.write(master, keys)
+                    sent = True
+            elif process.poll() is not None:
+                break
+        assert process.wait(timeout=2) == 0, output.decode(errors="replace")
+        assert f"OUTCOME={expected}".encode() in output
+        assert termios.tcgetattr(master) == original
+        assert b"?1049h" not in output
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            _ = process.wait(timeout=2)
         os.close(slave)
         os.close(master)

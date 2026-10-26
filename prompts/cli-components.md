@@ -117,3 +117,39 @@ Invoke the supplied executable path from the verifier.
 Assert the domain result and a rejected input, plus settings and JSON behavior when used.
 Do not call a live model or remote service during verification.
 The runtime uses Ayi's project lock. Standalone verifiers still need their own script locks.
+
+## Terminal input lifetime
+
+Prefer the shared input helpers. Use a custom `PromptSession` only when the requested interaction needs it.
+The locked prompt-toolkit API's `create_input()` returns an `Input` with `close()`, not a context manager.
+Never write `with create_input(...)`. Use `contextlib.closing` or an explicit `try/finally` that calls `close()`.
+For example, run this input block inside the domain handler after the shared invocation allows interaction:
+
+```python
+import sys
+from contextlib import closing
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import DummyHistory
+from prompt_toolkit.input.defaults import create_input
+from prompt_toolkit.output.defaults import create_output
+
+with closing(create_input(stdin=sys.stdin)) as terminal_input:
+    session = PromptSession[str](
+        input=terminal_input,
+        output=create_output(stdout=sys.stderr),
+        history=DummyHistory(),
+    )
+    question = session.prompt("You > ")
+```
+
+`PromptSession` restores input modes around each prompt; the enclosing block closes the input resource.
+Keep EOF and Ctrl-C distinct. Let the operation's cancellation owner handle them without swallowing other errors.
+If the user requires an alternate screen, restore it in `finally`, including when an adapter fails.
+Do not open an alternate screen or persist input history by default.
+
+For custom terminal interaction, verification must exercise the executable through a real PTY, not just redirected help.
+Cover successful input, EOF, Ctrl-C, adapter failure when present, and the noninteractive fallback.
+Capture terminal modes before spawning the child and compare them after exit using `termios.tcgetattr(master_fd)`.
+Keep the PTY master open until those checks finish. On macOS, the slave descriptor can be revoked when its controlling session exits.
+Do not skip terminal restoration checks or treat an ioctl failure as successful restoration.

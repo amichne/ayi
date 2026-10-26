@@ -37,6 +37,9 @@ Include the nearest invalid value, unknown options, missing arguments, output mo
 Check both --help and -h: useful output, all declared option spellings, zero exit, no business effects.
 Tests must assert observable results, not merely successful execution or help text. Do not fake
 coverage with a generic exit-zero verifier. Ayi independently checks help and unknown-option rejection.
+For custom terminal interaction, follow the input-lifetime and PTY verification rules in the supplied shared component API.
+Exercise the interactive path, EOF, Ctrl-C, and failure cleanup through a real PTY in the verifier.
+Redirected commands and successful help do not prove that an interactive prompt can start or restore its terminal.
 Use a standalone task only for an existing contract or a concrete dependency that the shared runtime cannot support.
 Explain that choice in requirements.md. Do not duplicate shared blocks merely for convenience.
 

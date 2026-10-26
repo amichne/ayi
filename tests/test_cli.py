@@ -200,12 +200,13 @@ if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
         "verification": verifier,
         "interface": json.dumps(document),
     }
+    components = (shell.root / "prompts/cli-components.md").read_text()
     if harness == "pi":
         source = (tools / "pi").read_text()
         split = source.index("Path('pi-args')")
         _ = (tools / "pi").write_text(
             source[:split]
-            + "assert 'Shared CLI components' in sys.argv[-1]\n"
+            + f"assert {components!r} in sys.argv[-1]\n"
             + "assert 'Ayi CLI policy' in sys.argv[-1]\n"
             + f"bundle = {bundle!r}\n"
             + "for name, key in [('proposal.toml','proposal'),('requirements.md','requirements'),('task','task'),('verify','verification'),('interface.json','interface')]:\n Path(name).write_text(bundle[key])\n"
@@ -214,7 +215,7 @@ if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
         codex = tools / "codex"
         _ = codex.write_text(
             f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
-            "assert 'Shared CLI components' in sys.argv[-1]\n"
+            f"assert {components!r} in sys.argv[-1]\n"
             "assert 'Ayi CLI policy' in sys.argv[-1]\n"
             f"Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text({json.dumps(bundle)!r})\n"
         )
