@@ -192,33 +192,33 @@ def resolve(request: Request) -> list[Candidate]:
     if request.command == "ayi":
         if not before:
             return [
-                Candidate(value=name)
-                for name in (
-                    "new",
-                    "modify",
-                    "explain",
-                    "sessions",
-                    "resume",
-                    "fork",
-                    "review",
-                    "list",
-                    "install",
-                    "update",
-                    "shell",
-                    "--help",
-                    "--version",
-                    "-V",
+                Candidate(value=name, description=description)
+                for name, description in (
+                    ("new", "Create a shell tool through a reviewed interview"),
+                    ("modify", "Modify an existing tool through review and verification"),
+                    ("explain", "Explain a saved tool without changing it"),
+                    ("sessions", "List saved tool-design sessions"),
+                    ("resume", "Resume a saved session"),
+                    ("fork", "Fork a saved session without changing its parent"),
+                    ("review", "Review a saved session or checkpoint"),
+                    ("list", "List saved tools and their invocations"),
+                    ("install", "Plan, apply, or remove installed command links"),
+                    ("update", "Update the installed source from main"),
+                    ("shell", "Generate native shell integration"),
+                    ("--help", "Show usage"),
+                    ("--version", "Show version and installed source revision"),
+                    ("-V", "Show version and installed source revision"),
                 )
-                if name.startswith(prefix)
+                if name.startswith(prefix) and (not name.startswith("-") or prefix.startswith("-"))
             ]
         if before[0] in ("new", "modify") and "--" not in before and prefix.startswith("-"):
             return [
-                Candidate(value=name)
-                for name in (
-                    "--force",
-                    "--design-model",
-                    "--implementation-harness",
-                    "--implementation-model",
+                Candidate(value=name, description=description)
+                for name, description in (
+                    ("--force", "Replace an existing command after review"),
+                    ("--design-model", "Choose the interview model"),
+                    ("--implementation-harness", "Choose Pi or Codex for implementation"),
+                    ("--implementation-model", "Choose the implementation model"),
                 )
                 if name.startswith(prefix) and name not in before
             ]
@@ -230,7 +230,7 @@ def resolve(request: Request) -> list[Candidate]:
             return [Candidate(value=name) for name in ("pi", "codex") if name.startswith(prefix)]
         if before[0] in ("fork", "review") and prefix.startswith("-"):
             return (
-                [Candidate(value="--checkpoint")]
+                [Candidate(value="--checkpoint", description="Choose a saved checkpoint")]
                 if "--checkpoint".startswith(prefix) and "--checkpoint" not in before
                 else []
             )
@@ -247,15 +247,22 @@ def resolve(request: Request) -> list[Candidate]:
                     factory_positionals.append(word)
             if not factory_positionals:
                 return [Candidate(value=name) for name in commands() if name.startswith(prefix)]
-        choices = {"install": ("plan", "apply", "uninstall"), "shell": ("init",)}
+        choices = {
+            "install": (
+                ("plan", "Show link ownership and proposed installation changes"),
+                ("apply", "Install owned command links"),
+                ("uninstall", "Remove owned command links"),
+            ),
+            "shell": (("init", "Emit shell integration for the current session"),),
+        }
         if len(before) == 1:
             return [
-                Candidate(value=name)
-                for name in choices.get(before[0], ())
+                Candidate(value=name, description=description)
+                for name, description in choices.get(before[0], ())
                 if name.startswith(prefix)
             ]
         if before == ["shell", "init"] and "zsh".startswith(prefix):
-            return [Candidate(value="zsh")]
+            return [Candidate(value="zsh", description="Native Zsh completion and registration")]
         return []
     interface = read_interface(request.command)
     if interface is None:

@@ -108,6 +108,8 @@ def test_native_zsh_tab_preserves_values_and_quotes_paths(shell: Shell) -> None:
         ("wild", "wild[?]*"),
         ("sub", "sub$(touch injected)"),
         ("unicode", "unicode東京"),
+        ("colon", "colon:name"),
+        ("back", "back\\slash"),
         ("-lead", "-leading"),
         (".hidden", ".hidden-file"),
     ]
@@ -133,10 +135,19 @@ def test_native_zsh_tab_preserves_values_and_quotes_paths(shell: Shell) -> None:
                 return
         pytest.fail(transcript.decode(errors="replace"))
 
+    def wait_output(text: bytes, start: int) -> None:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                transcript.extend(os.read(master, 65536))
+            if text in transcript[start:]:
+                return
+        pytest.fail(transcript.decode(errors="replace"))
+
     try:
         _ = os.write(
             master,
-            b'bindkey -e; autoload -Uz compinit; compinit -D -i; eval "$(ayi shell init zsh)"\n',
+            b'bindkey -e; autoload -Uz compinit; compinit -D -i; zstyle ":completion:*:descriptions" format "%d"; zstyle ":completion:*" group-name ""; eval "$(ayi shell init zsh)"\n',
         )
         _ = os.write(
             master,
@@ -144,6 +155,19 @@ def test_native_zsh_tab_preserves_values_and_quotes_paths(shell: Shell) -> None:
         )
         wait_file(home / "ready")
         buffer = home / "buffer"
+        for typed, heading, description in (
+            ("ayi ", b"ayi commands", b"Create a shell tool"),
+            ("ayi -", b"ayi options", b"Show version"),
+            ("ayi install ", b"ayi commands", b"Show link ownership"),
+        ):
+            start = len(transcript)
+            buffer.unlink(missing_ok=True)
+            _ = os.write(master, (typed + "\t").encode())
+            wait_output(heading, start)
+            wait_output(description, start)
+            _ = os.write(master, b"\x18")
+            wait_file(buffer)
+            assert buffer.read_text().rstrip("\n") == typed
         for typed, expected in (
             ("one --sort si\t", "one --sort size "),
             ("one --sort=si\t", "one --sort=size "),
@@ -222,6 +246,23 @@ def test_discovery_uses_manifest_and_preserves_legacy_tools(shell: Shell) -> Non
 def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
     prepare(shell)
     for args, expected in (
+        (
+            [""],
+            [
+                "new",
+                "modify",
+                "explain",
+                "sessions",
+                "resume",
+                "fork",
+                "review",
+                "list",
+                "install",
+                "update",
+                "shell",
+            ],
+        ),
+        (["-"], ["--help", "--version", "-V"]),
         (["new", "--f"], ["--force"]),
         (["res"], ["resume"]),
         (["up"], ["update"]),
@@ -236,6 +277,7 @@ def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
         (["modify", "--design-model", "designer", "t"], ["two"]),
         (["modify", "--implementation-model=builder", "t"], ["two"]),
         (["explain", "o"], ["one"]),
+        (["install", ""], ["plan", "apply", "uninstall"]),
         (["install", "a"], ["apply"]),
         (["shell", "init", "z"], ["zsh"]),
     ):
@@ -246,7 +288,10 @@ def test_ayi_actions_complete_flags_and_command_context(shell: Shell) -> None:
             ),
         )
         assert result.returncode == 0, result.stderr
-        assert [row["value"] for row in json.loads(result.stdout)] == expected
+        rows = json.loads(result.stdout)
+        assert [row["value"] for row in rows] == expected
+        if args in ([""], ["-"], ["new", "--f"], ["install", ""]):
+            assert all(row["description"].strip() for row in rows)
 
 
 @pytest.mark.parametrize(
@@ -547,6 +592,11 @@ def test_zsh_refresh_registers_new_tools_without_startup_edits(shell: Shell) -> 
     script = """
 autoload -Uz compinit
 compinit -D -i
+zstyle ':completion:*' menu select
+zstyle ':completion:*:descriptions' format '%B%d%b'
+bindkey '^X^Y' backward-char
+before_styles=$(zstyle -L)
+before_keys=$(bindkey -L)
 eval "$("$1/bin/ayi" shell init zsh)"
 [[ $_comps[one] == _ayi && $_comps[ayi] == _ayi ]] || exit 20
 cp "$1/tasks/one" "$1/tasks/new-tool"
@@ -572,6 +622,7 @@ _ayi_refresh || exit 25
 rm "$1/tasks/another"
 _ayi_refresh || exit 26
 [[ $_comps[ayi] == _ayi && $_comps[one] == _files ]] || exit 27
+[[ $(zstyle -L) == $before_styles && $(bindkey -L) == $before_keys ]] || exit 28
 print refreshed
 """
     result = subprocess.run(

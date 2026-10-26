@@ -1,8 +1,10 @@
 # Sourced explicitly via eval "$(ayi shell init zsh)" after compinit.
 _ayi() {
     emulate -L zsh
-    local -a args rows fields description
-    local row i
+    setopt extendedglob
+    local -a args rows fields candidates directories files
+    local row i value description tag=values ret=1
+    local command=${words[1]:t}
     for (( i=2; i<CURRENT; i++ )); do
         args+=("${(Q)words[i]}")
     done
@@ -11,13 +13,36 @@ _ayi() {
     for row in "${rows[@]}"; do
         fields=("${(@ps:\t:)row}")
         (( ${#fields} >= 2 )) || continue
-        description=("${fields[2]}${fields[3]:+ -- ${fields[3]}}")
+        # _describe uses a colon-delimited display format, not shell syntax.
+        value=${fields[2]//\\/\\\\}
+        value=${value//:/\\:}
+        description=${fields[3]//\\/\\\\}
+        description=${description//:/\\:}
         if [[ ${fields[1]} == directory ]]; then
-            compadd -S '' -d description -- "${fields[2]}"
+            directories+=("$value:$description")
+        elif [[ ${fields[1]} == file ]]; then
+            files+=("$value:$description")
         else
-            compadd -d description -- "${fields[2]}"
+            candidates+=("$value:$description")
         fi
     done
+    if [[ $command == ayi ]]; then
+        if [[ $PREFIX == -* ]]; then
+            tag=options
+        elif [[ $CURRENT == 2 || ( $CURRENT == 3 && ${words[2]} == (install|shell) ) ]]; then
+            tag=commands
+        fi
+    fi
+    if (( ${#candidates} )); then
+        _describe -t "$tag" "$command $tag" candidates && ret=0
+    fi
+    if (( ${#directories} )); then
+        _describe -t directories "$command directories" directories -S '' && ret=0
+    fi
+    if (( ${#files} )); then
+        _describe -t files "$command files" files && ret=0
+    fi
+    return $ret
 }
 
 _ayi_refresh() {
