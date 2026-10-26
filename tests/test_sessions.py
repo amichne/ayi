@@ -267,7 +267,7 @@ def test_fork_specific_checkpoint_and_offline_overview(shell: Shell) -> None:
     assert forked.returncode == 0
     directories = {path.parents[1] for path in session_files(shell)}
     child = next(directory for directory in directories if directory.name != session_id)
-    child_state = json.loads(next((child / "checkpoints").glob("*.json")).read_text())
+    child_state = json.loads(min((child / "checkpoints").glob("*.json")).read_text())
     assert child_state["phase"]["kind"] == "next"
     assert [answer["answer"] for answer in child_state["answers"]] == ["greet NAME"]
     assert json.loads(paths[-1].read_text())["phase"]["kind"] == "plan"
