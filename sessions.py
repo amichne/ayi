@@ -90,7 +90,8 @@ class Ask(Value):
     question: Question
 
 
-class ReviewAnswer(Value):
+class EditAnswer(Value):
+    # Keep pending answers from older checkpoints editable without a schema migration.
     kind: Literal["answer"] = "answer"
     question: Question
     answer: UserText
@@ -115,11 +116,11 @@ class Done(Value):
 class Direction(Value):
     after_answer: Annotated[int, Field(ge=0)]
     instruction: UserText
-    context: Annotated[Ask | ReviewAnswer | ReviewPlan | ReviewDraft, Field(discriminator="kind")]
+    context: Annotated[Ask | EditAnswer | ReviewPlan | ReviewDraft, Field(discriminator="kind")]
 
 
 type Phase = Annotated[
-    Next | Ask | ReviewAnswer | ReviewPlan | ReviewDraft | Done, Field(discriminator="kind")
+    Next | Ask | EditAnswer | ReviewPlan | ReviewDraft | Done, Field(discriminator="kind")
 ]
 
 
@@ -174,7 +175,7 @@ class Session(Value):
             self.required_topic is not None or self.phase.name != self.name
         ):
             raise ValueError("completed command differs from the agreed answers")
-        if isinstance(self.phase, (Ask, ReviewAnswer)) and (
+        if isinstance(self.phase, (Ask, EditAnswer)) and (
             (self.required_topic is not None and self.phase.question.topic != self.required_topic)
             or (self.name is not None and self.phase.question.topic == "name")
         ):

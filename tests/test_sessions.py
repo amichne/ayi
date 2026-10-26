@@ -11,26 +11,41 @@ def session_files(shell: Shell) -> list[Path]:
     return sorted((Path(shell.env["XDG_STATE_HOME"]) / "ayi/sessions").glob("*/checkpoints/*.json"))
 
 
-def test_answer_review_checkpoint_resume_and_fork(shell: Shell) -> None:
+def test_answers_advance_immediately_with_checkpoints_resume_and_fork(shell: Shell) -> None:
     home = prepare(shell)
     first = shell.run(
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/pause\n",
+        input_text="1\nUse hello, preserve spaces\n/pause\n",
     )
     assert first.returncode == 0, first.stderr
     checkpoints = session_files(shell)
     assert checkpoints, "Every answer needs a durable checkpoint"
     latest = json.loads(checkpoints[-1].read_text())
-    assert latest["phase"]["answer"] == "Use hello, preserve spaces"
-    assert len(latest["answers"]) == 1, "The pending answer must not reach the model before review"
+    assert latest["phase"]["kind"] == "plan"
+    assert [answer["answer"] for answer in latest["answers"]] == [
+        "greet NAME",
+        "Use hello, preserve spaces",
+    ]
+    submitted = [
+        json.loads(path.read_text())
+        for path in checkpoints
+        if json.loads(path.read_text())["phase"]["kind"] == "next"
+    ]
+    assert [len(state["answers"]) for state in submitted] == [0, 1, 2]
+    assert "Submit this answer" not in first.stderr
+    calls = [json.loads(line) for line in (home / "calls").read_text().splitlines()]
+    assert [call["mode"] for call in calls] == ["interview"] * 3
+    assert json.loads(calls[-1]["args"][-1])["answers"][-1]["answer"] == (
+        "Use hello, preserve spaces"
+    )
     session_id = checkpoints[-1].parents[1].name
     before = [path.read_bytes() for path in checkpoints]
-    forked = shell.run("fork", session_id, input_text="/submit\n/pause\n")
+    forked = shell.run("fork", session_id, input_text="/pause\n")
     assert forked.returncode == 0, forked.stderr
     assert [path.read_bytes() for path in checkpoints] == before
-    resumed = shell.run("resume", session_id, input_text="/submit\n/implement\n/draft\ny\ny\n")
+    resumed = shell.run("resume", session_id, input_text="/implement\n/draft\ny\ny\n")
     assert resumed.returncode == 0, resumed.stderr
     assert shell.tool("greet", "Space Name").stdout == "hello Space Name\n"
     calls = [json.loads(line) for line in (home / "calls").read_text().splitlines()]
@@ -54,7 +69,7 @@ def test_controls_preserve_question_and_steer_only_future_design(shell: Shell) -
         "design/example:high",
         "--implementation-model",
         "implementation/example",
-        input_text="/show-me\n/unclear\n/clarify Keep all output local\n1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="/show-me\n/unclear\n/clarify Keep all output local\n1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("Example: greet Ada") == 2
@@ -82,8 +97,12 @@ def test_edit_answer_invalidates_later_answers_but_keeps_checkpoints(shell: Shel
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/edit 1\n/edit\n+ with a flag\n/submit\n/pause\n",
+        input_text="1\nUse hello, preserve spaces\n/edit 1\n/pause\n",
     )
+    assert result.returncode == 0, result.stderr
+    path = session_files(shell)[-1]
+    assert json.loads(path.read_text())["phase"]["answer"] == "greet NAME"
+    result = shell.run("resume", path.parents[1].name, input_text="+ with a flag\n/pause\n")
     assert result.returncode == 0, result.stderr
     paths = session_files(shell)
     snapshots = [json.loads(path.read_text()) for path in paths]
@@ -93,6 +112,33 @@ def test_edit_answer_invalidates_later_answers_but_keeps_checkpoints(shell: Shel
     assert snapshots[-1]["phase"]["kind"] == "ask"
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
     assert paths[-1].parents[1].stat().st_mode & 0o777 == 0o700
+
+
+def test_legacy_pending_answer_resumes_in_editor_without_confirmation(shell: Shell) -> None:
+    home = prepare(shell)
+    first = shell.run("new", "greet", "Greet a person", input_text="/pause\n")
+    assert first.returncode == 0, first.stderr
+    path = session_files(shell)[-1]
+    state = json.loads(path.read_text())
+    state["phase"] = {
+        "kind": "answer",
+        "question": state["phase"]["question"],
+        "answer": "echo NAME | greet",
+    }
+    _ = path.write_text(json.dumps(state))
+    resumed = shell.run(
+        "resume", path.parents[1].name, input_text="\nUse hello, preserve spaces\n/pause\n"
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert "Current answer: echo NAME | greet" in resumed.stderr
+    assert "Submit this answer" not in resumed.stderr
+    calls = [json.loads(line) for line in (home / "calls").read_text().splitlines()]
+    request = json.loads(calls[-1]["args"][-1])
+    assert [answer["answer"] for answer in request["answers"]] == [
+        "echo NAME | greet",
+        "Use hello, preserve spaces",
+    ]
+    assert json.loads(session_files(shell)[-1].read_text())["phase"]["kind"] == "plan"
 
 
 def test_implementation_needs_complete_design_and_explicit_action(shell: Shell) -> None:
@@ -115,7 +161,7 @@ def test_generation_failure_keeps_plan_and_hides_model_output(shell: Shell) -> N
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n",
+        input_text="1\nUse hello, preserve spaces\n/implement\n",
     )
     assert result.returncode == 17
     assert "PRIVATE" not in result.stdout + result.stderr
@@ -180,7 +226,7 @@ def test_settings_select_codex_before_implementation(shell: Shell) -> None:
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/settings\ndesigner/example\ncodex\nbuilder/example\n/implement\n/draft\ny\ny\n",
+        input_text="1\nUse hello, preserve spaces\n/settings\ndesigner/example\ncodex\nbuilder/example\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr
     args = json.loads((home / "codex-args").read_text())
@@ -201,14 +247,12 @@ def test_fork_specific_checkpoint_and_offline_overview(shell: Shell) -> None:
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/pause\n",
+        input_text="1\nUse hello, preserve spaces\n/pause\n",
     )
     assert first.returncode == 0
     paths = session_files(shell)
     session_id = paths[-1].parents[1].name
-    checkpoint = next(
-        path for path in paths if json.loads(path.read_text())["phase"]["kind"] == "answer"
-    )
+    checkpoint = next(path for path in paths if len(json.loads(path.read_text())["answers"]) == 1)
     prior = (home / "calls").read_bytes()
     overview = shell.run("review", session_id)
     assert overview.returncode == 0
@@ -224,24 +268,25 @@ def test_fork_specific_checkpoint_and_offline_overview(shell: Shell) -> None:
     directories = {path.parents[1] for path in session_files(shell)}
     child = next(directory for directory in directories if directory.name != session_id)
     child_state = json.loads(next((child / "checkpoints").glob("*.json")).read_text())
-    assert child_state["phase"]["kind"] == "answer"
-    assert child_state["answers"] == []
+    assert child_state["phase"]["kind"] == "next"
+    assert [answer["answer"] for answer in child_state["answers"]] == ["greet NAME"]
     assert json.loads(paths[-1].read_text())["phase"]["kind"] == "plan"
 
 
-def test_eof_keeps_unsubmitted_answer_and_resume_does_not_regenerate_draft(shell: Shell) -> None:
+def test_eof_keeps_submitted_answer_and_resume_does_not_regenerate_draft(shell: Shell) -> None:
     home = prepare(shell)
     first = shell.run("new", "greet", "Greet a person", input_text="1\n")
     assert first.returncode == 130
     paths = session_files(shell)
     state = json.loads(paths[-1].read_text())
-    assert state["phase"]["answer"] == "greet NAME"
-    assert state["answers"] == []
+    assert state["phase"]["kind"] == "ask"
+    assert state["phase"]["question"]["topic"] == "requirements"
+    assert [answer["answer"] for answer in state["answers"]] == ["greet NAME"]
     session_id = paths[-1].parents[1].name
     generated = shell.run(
         "resume",
         session_id,
-        input_text="/submit\nUse hello, preserve spaces\n/submit\n/implement\n/pause\n",
+        input_text="Use hello, preserve spaces\n/implement\n/pause\n",
     )
     assert generated.returncode == 0
     resumed = shell.run("resume", session_id, input_text="/draft\ny\ny\n")
@@ -271,7 +316,7 @@ def test_resume_rejects_inconsistent_plan_before_model_or_implementation(shell: 
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/pause\n",
+        input_text="1\nUse hello, preserve spaces\n/pause\n",
     )
     assert result.returncode == 0
     path = session_files(shell)[-1]
@@ -291,7 +336,7 @@ def test_twentieth_answer_can_reach_final_review(shell: Shell) -> None:
         "new",
         "greet",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/pause\n",
+        input_text="1\nUse hello, preserve spaces\n/pause\n",
     )
     assert result.returncode == 0
     path = session_files(shell)[-1]

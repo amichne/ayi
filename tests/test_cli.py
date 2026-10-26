@@ -233,7 +233,7 @@ if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
         "Greet a person",
         "--implementation-harness",
         harness,
-        input_text="1\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="1\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr
     assert "Verification passed" in result.stderr

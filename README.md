@@ -156,8 +156,8 @@ source and requirements and asks only about unresolved changes; the name stays f
 
 Use arrow keys or Tab to copy a choice into the input field. Type to append or edit its text.
 Choices remain visible and never filter as you type. Select **Write your own answer** for an empty field.
-You can also type a custom answer directly. Each answer receives a checkpoint before its submission review.
-Choose **Submit answer** to send it to the design model, or **Edit answer** to change it first.
+You can also type a custom answer directly. Press Enter to submit it and continue without a confirmation step.
+Each answer receives a checkpoint before Ayi asks the design model for the next question or complete design.
 
 Candidates and context precede the input row. The interface uses no alternate screen.
 With `NO_COLOR`, `TERM=dumb`, CI, or redirected streams, numbered choices accept a number or custom text.
@@ -165,7 +165,7 @@ During plain-text edits, Enter keeps the current answer. A `+ text` response app
 Esc, Ctrl-C, and EOF exit the flow. The last checkpoint remains available for resume.
 The interface uses a single-line editor. Sessions preserve accepted answers and pending answers outside Git.
 
-Use these controls at a question, answer review, design review, or draft review:
+Use these controls at a question, answer edit, design review, or draft review:
 
 - `/clarify <direction>` changes the direction of future questions and the proposed approach.
 - `/show-me` or `/unclear` requests examples and explanation without changing the current answer.

@@ -22,9 +22,9 @@ from sessions import (
     Ask,
     Direction,
     Done,
+    EditAnswer,
     Next,
     Ready,
-    ReviewAnswer,
     ReviewDraft,
     ReviewPlan,
     Session,
@@ -254,10 +254,11 @@ def run_session(directory: Path, session: Session) -> int:
                 value = ui.entry(
                     f"{session.action} / {question.topic}\n{question.question}", question.options
                 )
-            case ReviewAnswer(question=question, answer=answer):
-                ui.status(f"Review answer: {question.question}\n{answer}")
+            case EditAnswer(question=question, answer=answer):
                 value = ui.entry(
-                    "Submit this answer to the design model?", ("Submit answer", "Edit answer")
+                    f"{session.action} / {question.topic}\n{question.question}",
+                    question.options,
+                    initial=answer,
                 )
             case ReviewPlan() | ReviewDraft():
                 overview(session)
@@ -274,8 +275,6 @@ def run_session(directory: Path, session: Session) -> int:
             case _:
                 assert_never(phase)
         value = {
-            "Submit answer": "/submit",
-            "Edit answer": "/edit",
             "Implement": "/implement",
             "Review draft": "/draft",
             "clarify": "/clarify",
@@ -340,29 +339,10 @@ def run_session(directory: Path, session: Session) -> int:
                 update={
                     "answers": session.answers[:index],
                     "directions": tuple(d for d in session.directions if d.after_answer <= index),
-                    "phase": ReviewAnswer(question=answer.question, answer=answer.answer),
+                    "phase": EditAnswer(question=answer.question, answer=answer.answer),
                 }
             )
             ui.status("Later answers leave this branch. Earlier checkpoints preserve them.")
-        elif command == "/edit" and isinstance(phase, ReviewAnswer):
-            edited = ui.entry("Edit your answer:", initial=phase.answer)
-            session = session.model_copy(
-                update={"phase": ReviewAnswer(question=phase.question, answer=edited)}
-            )
-        elif command == "/submit" and isinstance(phase, ReviewAnswer):
-            if phase.question.topic == "name" and not install.valid_name(phase.answer):
-                ui.status("Use /edit to enter a valid command name.")
-                continue
-            session = session.model_copy(
-                update={
-                    "answers": (
-                        *session.answers,
-                        Answer(question=phase.question, answer=phase.answer),
-                    ),
-                    "phase": Next(),
-                }
-            )
-            _ = original_for(session)
         elif command == "/implement" and isinstance(phase, ReviewPlan):
             _ = original_for(session)
             request = (
@@ -391,10 +371,17 @@ def run_session(directory: Path, session: Session) -> int:
         elif value.startswith("/"):
             ui.status("That action is unavailable here. " + CONTROLS)
             continue
-        elif isinstance(phase, Ask) and value:
+        elif isinstance(phase, (Ask, EditAnswer)) and value:
+            if phase.question.topic == "name" and not install.valid_name(value):
+                ui.status("Enter a valid command name.")
+                continue
             session = session.model_copy(
-                update={"phase": ReviewAnswer(question=phase.question, answer=value)}
+                update={
+                    "answers": (*session.answers, Answer(question=phase.question, answer=value)),
+                    "phase": Next(),
+                }
             )
+            _ = original_for(session)
         else:
             ui.status("Choose an action or use /pause to save and exit.")
             continue

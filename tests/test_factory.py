@@ -94,8 +94,7 @@ def test_adaptive_factory_registers_runnable_tool(shell: Shell, args: tuple[str,
     prompt = "Greet a person\n" if len(args) < 2 else ""
     result = shell.run(
         *args,
-        input_text=prompt
-        + "1\n/submit\n2\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text=prompt + "1\n2\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "How should greet receive a name?" in result.stderr
@@ -118,8 +117,7 @@ def test_named_tool_is_available_on_path_with_attributed_help(
     answer = "" if with_prompt else "Greet a person\n"
     result = shell.run(
         *arguments,
-        input_text=answer
-        + "1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text=answer + "1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Name your greeting tool?" not in result.stderr
@@ -148,6 +146,18 @@ def test_invalid_explicit_name_is_rejected_before_model(shell: Shell, name: str)
     result = shell.run("new", name, "Greet a person")
     assert result.returncode == 64
     assert not (home / "calls").exists()
+
+
+def test_invalid_name_answers_stay_at_question_until_corrected(shell: Shell) -> None:
+    home = prepare(shell)
+    result = shell.run("new", "Greet a person", input_text="BadName\nayi\n1\n/pause\n")
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in (home / "calls").read_text().splitlines()]
+    assert [call["mode"] for call in calls] == ["interview", "interview"]
+    continued = json.loads(calls[-1]["args"][-1])
+    assert continued["name"] == "greet"
+    assert [answer["answer"] for answer in continued["answers"]] == ["greet"]
+    assert continued["required_topic"] == "usage"
 
 
 @pytest.mark.parametrize("version", [1, 2])
@@ -212,7 +222,7 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
         "modify",
         "greet",
         "Use hello",
-        input_text="Use hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="Use hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode != 0
     assert "Verification passed" in result.stderr
@@ -227,7 +237,7 @@ def test_modify_preserves_unrelated_index_and_rolls_back_rejected_commit(
     result = shell.run(
         "modify",
         "greet",
-        input_text="Use hello\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="Use hello\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert shell.tool("greet", "Grace Hopper").stdout == "hello Grace Hopper\n"
@@ -281,7 +291,7 @@ def test_modify_never_overwrites_unapproved_changes(
         "modify",
         "greet",
         "Use hello",
-        input_text="Use hello, preserve spaces\n/submit\n/implement\n/draft\ny\n" + answer,
+        input_text="Use hello, preserve spaces\n/implement\n/draft\ny\n" + answer,
     )
     assert result.returncode != 0
     assert task.read_text() == ("concurrent edit\n" if state == "concurrent" else before)
@@ -359,7 +369,7 @@ def test_force_replaces_only_files_or_links_and_restores_them_on_commit_failure(
     failed = shell.run(
         *args,
         "--force",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert failed.returncode != 0
     assert not (shell.root / "tasks/abc").exists()
@@ -382,7 +392,7 @@ def test_force_replaces_only_files_or_links_and_restores_them_on_commit_failure(
         "--force",
         "abc",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert passed.returncode == 0, passed.stderr + passed.stdout
     assert shell.tool("abc", "after replacement").stdout == "hello after replacement\n"
@@ -408,7 +418,7 @@ def test_invalid_help_prevents_forced_installation(shell: Shell, help_body: str)
         "--force",
         "abc",
         "Greet a person",
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 65, result.stderr + result.stdout
     assert "tool must provide nonempty --help output and exit 0" in result.stderr
@@ -425,15 +435,13 @@ def test_force_rebuilds_clean_tool_without_bypassing_review_or_dirty_protection(
     old = (shell.root / "tasks/greet").read_bytes()
     assert shell.run("new", "greet", "Use hello").returncode == 65
     args = ("new", "--force", "greet", "Use hello")
-    denied = shell.run(
-        *args, input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\nn\n"
-    )
+    denied = shell.run(*args, input_text="1\nUse hello, preserve spaces\n/implement\n/draft\nn\n")
     assert denied.returncode == 1
     assert (shell.root / "tasks/greet").read_bytes() == old
     assert not (home / ".local/bin/greet").exists()
     result = shell.run(
         *args,
-        input_text="1\n/submit\nUse hello, preserve spaces\n/submit\n/implement\n/draft\ny\ny\n",
+        input_text="1\nUse hello, preserve spaces\n/implement\n/draft\ny\ny\n",
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert shell.tool("greet", "recreated").stdout == "hello recreated\n"

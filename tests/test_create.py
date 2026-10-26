@@ -13,9 +13,7 @@ from .conftest import Shell, copy_runtime, init_git
 def new_command(
     shell: Shell, prompt: str, *, input_text: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    return shell.run(
-        "new", "greet", prompt, input_text="1\n/submit\n/implement\n/draft\n" + input_text
-    )
+    return shell.run("new", "greet", prompt, input_text="1\n/implement\n/draft\n" + input_text)
 
 
 @pytest.mark.parametrize("reject_commit", [False, True])
