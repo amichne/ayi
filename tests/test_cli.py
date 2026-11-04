@@ -282,17 +282,34 @@ if "$1" --json --name Ada --style missing 2>/dev/null; then exit 1; fi
         check=True,
     )
     assert clean.stdout == ""
-    if harness == "pi":
-        clone = shell.cwd / "cloned registry"
-        _ = subprocess.run(
-            ["git", "clone", "-q", str(shell.root), str(clone)], env=shell.env, check=True
-        )
-        home = shell.cwd / "clone home"
-        home.mkdir()
-        env = dict(shell.env, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
-        cloned = Shell(clone, shell.cwd, env)
-        assert cloned.run("install", "apply").returncode == 0
-        assert cloned.tool("greet", "--name", "Clone Name").stdout == "Hello Clone Name\n"
+    clone = shell.cwd / "cloned registry"
+    _ = subprocess.run(
+        ["git", "clone", "--no-hardlinks", "-q", str(shell.root), str(clone)],
+        env=shell.env,
+        check=True,
+    )
+    home = shell.cwd / "clone home"
+    home.mkdir()
+    env = dict(
+        shell.env,
+        HOME=str(home),
+        XDG_CONFIG_HOME=str(home / ".config"),
+        XDG_DATA_HOME=str(home / ".local/share"),
+        XDG_STATE_HOME=str(home / ".local/state"),
+        XDG_CACHE_HOME=str(home / ".cache"),
+    )
+    # Neither generation's registry nor its HOME remains at its original path.
+    _ = shell.root.rename(shell.cwd / "unavailable original registry")
+    _ = Path(shell.env["HOME"]).rename(shell.cwd / "unavailable original home")
+    cloned = Shell(clone, shell.cwd, env)
+    installed = cloned.run("install", "apply")
+    assert installed.returncode == 0, installed.stderr
+    invoked = cloned.tool("greet", "--name", "Clone Name")
+    assert invoked.returncode == 0, invoked.stderr
+    assert invoked.stdout == "Hello Clone Name\n"
+    assert json.loads(cloned.tool("greet", "--name", "Clone Name", "--json").stdout)["data"] == {
+        "name": "Clone Name"
+    }
 
 
 def test_assembled_example_is_current_and_runs_offline(tmp_path: Path) -> None:
